@@ -128,7 +128,7 @@ python scripts/perf_eval/secrets_scan.py
 - **KPI cards** answer "is tonight's build healthy?": the latest nightly
   with AMD results (and each later day that had none, and why), overnight
   performance, regressions, improvements, accuracy, and coverage.
-- **Tabs:** Performance (default), Throughput vs Latency, Trends, Accuracy,
+- **Tabs:** Performance (default), Trends, Throughput vs Latency, Accuracy,
   and Data (every run in one sortable table, with Copy CSV). The Missing
   panel at the bottom lists later nightlies with no AMD results, and configs
   the recipes expect but the newest build did not report.

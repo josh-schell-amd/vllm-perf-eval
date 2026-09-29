@@ -1081,8 +1081,8 @@ function renderCoveragePanel() {
    ================================================================ */
 const TABS = [
   { id: 'performance', label: 'Performance' },
-  { id: 'tradeoff', label: 'Throughput vs Latency' },
   { id: 'trends', label: 'Trends' },
+  { id: 'tradeoff', label: 'Throughput vs Latency' },
   { id: 'accuracy', label: 'Accuracy' },
   { id: 'data', label: 'Data' },
 ];
@@ -1629,11 +1629,12 @@ function comparedWhen(latest) {
   return 'an older run (#' + (before.build_number || '?') + ', ' + Number(month) + '/' + Number(date) + ')';
 }
 
-// Colour a change only when it is overnight and past the threshold.
+// Colour a change only when it is overnight and past the threshold. A drop
+// takes its size tier, the same yellow/orange/red as the legend and row edge.
 function changeClass(latest) {
   if (!latest || !latest.verdict || !latest.overnight) return 'neutral';
   const v = latest.verdict;
-  if (v.regressed) return 'warnc';
+  if (v.regressed) return 'chg-' + REG_TIERS[regTier(v.magnitude)].cls;
   if (v.improved && v.magnitude >= THRESHOLDS.perf_rel) return 'good';
   return 'neutral';
 }

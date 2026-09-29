@@ -308,6 +308,9 @@ a:hover .ext-inline, .reg-item.linked:hover .ext-inline { opacity: 1; transform:
 .chart-tip .tip-v.bad { color: var(--accent-red); font-weight: 600; }
 .chart-tip .tip-v.warnc { color: var(--accent-orange); font-weight: 600; }
 .chart-tip .tip-v.good { color: var(--accent-green); }
+.chart-tip .tip-v.chg-minor { color: var(--accent-yellow); font-weight: 600; }
+.chart-tip .tip-v.chg-moderate { color: var(--accent-orange); font-weight: 600; }
+.chart-tip .tip-v.chg-major { color: var(--accent-red); font-weight: 600; }
 .chart-tip .tip-v.neutral { color: var(--text-secondary); }
 .chart-tip .tip-note { grid-column: 2; font-size: 11px; color: var(--text-tertiary); line-height: 1.35; }
 .chart-tip .tip-foot { margin-top: 8px; font-size: 10px; color: var(--text-tertiary); }
@@ -395,6 +398,9 @@ tbody tr.clickable { cursor: pointer; }
 .good { color: var(--accent-green); }
 .bad { color: var(--accent-red); }
 .warnc { color: var(--accent-orange); }
+.chg-minor { color: var(--accent-yellow); }
+.chg-moderate { color: var(--accent-orange); }
+.chg-major { color: var(--accent-red); }
 .neutral { color: var(--text-tertiary); }
 .pill { display: inline-block; padding: 1px 7px; border-radius: 10px; font-size: 10px; background: var(--bg-tertiary); color: var(--text-tertiary); border: 1px solid var(--border); white-space: nowrap; }
 .pill.alert { border-color: var(--accent-red); color: var(--accent-red); background: rgba(242,92,78,0.12); }

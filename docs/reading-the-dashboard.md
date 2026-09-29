@@ -90,19 +90,6 @@ URL, so **Copy link** reproduces the view.
   row's model and device, since per-GPU numbers differ by orders of magnitude
   across models.
 
-### Throughput vs Latency
-
-- Interactivity (1 / TPOT) against Total Throughput, one curve per shape
-  across concurrency, per model and device.
-- Above the charts: the peak throughput and best mean TPOT in view, with the
-  configs that set them.
-- A dashed **Pareto frontier** joins the points no other point beats on both
-  interactivity and throughput: the best tradeoff available at each
-  interactivity.
-- A concurrency scaling chart, and a throughput heatmap by ISL/OSL ×
-  concurrency.
-- Red ring = throughput regression overnight.
-
 ### Trends
 
 - Like Performance: pick a metric, then one chart per model and device, with
@@ -119,6 +106,19 @@ URL, so **Copy link** reproduces the view.
   chart uses the same axis.
 - The chart window (1–30 days) changes the charts only, never the regression
   counts.
+
+### Throughput vs Latency
+
+- Interactivity (1 / TPOT) against Total Throughput, one curve per shape
+  across concurrency, per model and device.
+- Above the charts: the peak throughput and best mean TPOT in view, with the
+  configs that set them.
+- A dashed **Pareto frontier** joins the points no other point beats on both
+  interactivity and throughput: the best tradeoff available at each
+  interactivity.
+- A concurrency scaling chart, and a throughput heatmap by ISL/OSL ×
+  concurrency.
+- Red ring = throughput regression overnight.
 
 ### Accuracy
 
@@ -150,7 +150,9 @@ URL, so **Copy link** reproduces the view.
 
 - **Red = regression, and nothing else.** The palette has no red or pink.
 - **Per metric:** a config turns red only on the charts where it regressed.
-- **Chips by size:** yellow up to 2.5%, orange up to 5%, red above 5%.
+- **By size:** regression chips, row edges and change arrows share one scale:
+  yellow up to 2.5%, orange up to 5%, red above 5%. A change that is not
+  overnight (the config skipped the previous run) stays grey.
 - **Green = improvement.**
 
 > [!NOTE]
