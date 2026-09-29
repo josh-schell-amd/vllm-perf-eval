@@ -155,10 +155,11 @@ class TestWorkflowTokenHandling:
         assert holders == ["Check out the event store", "Persist the event store"]
 
     def test_ci_never_receives_the_login_or_the_store_token(self):
+        # CI builds with a throwaway login of its own, never the real one.
         for name in ("lint-and-test.yml", "secrets-scan.yml"):
             text = self._workflow_text(name)
             for secret in ("DASHBOARD_PASSWORD", "DASHBOARD_USERNAME", "STATE_REPO_TOKEN"):
-                assert secret not in text, f"{name} must not receive {secret}"
+                assert f"secrets.{secret}" not in text, f"{name} must not receive {secret}"
 
     def test_only_the_persist_step_pushes_with_the_token(self):
         workflow = yaml.safe_load(self._workflow_text("collect-and-deploy.yml"))
