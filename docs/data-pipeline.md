@@ -127,9 +127,14 @@ nightly's artifacts.
   after the model, under the task directory perf-eval gives it.
 - Pagination is capped (10 pages for builds, a shared 10-page budget per build
   for artifacts) and raises rather than looping.
-- Retries are capped at 3 attempts, honour `Retry-After`, and only apply to
-  gateway-ish codes (429, 502, 503, 504, 520, 522, 524). A 500 is not retried,
-  since it is usually persistent.
+- Retries are capped at 3 attempts and only apply to gateway-ish codes (429,
+  502, 503, 504, 520, 522, 524). A 500 is not retried, since it is usually
+  persistent. A retry waits until Buildkite's rate limit resets
+  (`RateLimit-Reset`, else `Retry-After`, at most 70 s), not a fixed backoff.
+- **The rate limit is shared** by everyone using the `vllm` organization's
+  API, so the collector pauses for the reset once fewer than 20 requests are
+  left, instead of spending the rest. A rebuild takes minutes rather than
+  seconds as a result.
 - Retry attempts are charged to the budget, so the reported total is what
   Buildkite actually saw.
 - The workflow's `concurrency` group prevents two runs overlapping.

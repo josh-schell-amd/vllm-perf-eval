@@ -302,10 +302,10 @@ class TestRetriesAreCharged:
 
 
 class _DownloadResponse:
-    def __init__(self, status_code, body=None):
+    def __init__(self, status_code, body=None, headers=None):
         self.status_code = status_code
         self._body = body
-        self.headers: dict = {}
+        self.headers: dict = headers or {}
 
     def json(self):
         if self._body is None:
@@ -342,6 +342,50 @@ class TestDownloads:
         self._serve(monkeypatch, [_DownloadResponse(429)])
         with pytest.raises(RuntimeError, match="after 3 attempts"):
             ca._bk_download_json(self.SIGNED, "t", label="#1 results/wl/bench-a.json")
+
+    def test_a_rate_limited_download_waits_for_the_reset(self, monkeypatch):
+        # A 2-4 s backoff cannot outlast a per-minute limit; Buildkite says when it resets.
+        self._serve(
+            monkeypatch,
+            [
+                _DownloadResponse(429, headers={"RateLimit-Reset": "37"}),
+                _DownloadResponse(200, {"a": 1}),
+            ],
+        )
+        waits = []
+        monkeypatch.setattr(ca.time, "sleep", waits.append)
+        assert ca._bk_download_json(self.SIGNED, "t") == {"a": 1}
+        assert waits == [38]
+
+    def test_a_nearly_used_limit_pauses_before_the_next_request(self, monkeypatch):
+        # The limit is shared by everyone using vllm's Buildkite API.
+        headers = {"RateLimit-Remaining": "3", "RateLimit-Reset": "12"}
+        self._serve(monkeypatch, [_DownloadResponse(200, {"a": 1}, headers)])
+        waits = []
+        monkeypatch.setattr(ca.time, "sleep", waits.append)
+        ca._bk_download_json(self.SIGNED, "t")
+        assert waits == [13]
+
+    def test_plenty_left_means_no_pause(self, monkeypatch):
+        headers = {"RateLimit-Remaining": "150", "RateLimit-Reset": "12"}
+        self._serve(monkeypatch, [_DownloadResponse(200, {"a": 1}, headers)])
+        waits = []
+        monkeypatch.setattr(ca.time, "sleep", waits.append)
+        ca._bk_download_json(self.SIGNED, "t")
+        assert waits == []
+
+    def test_a_wait_is_capped(self, monkeypatch):
+        self._serve(
+            monkeypatch,
+            [
+                _DownloadResponse(429, headers={"Retry-After": "3600"}),
+                _DownloadResponse(200, {"a": 1}),
+            ],
+        )
+        waits = []
+        monkeypatch.setattr(ca.time, "sleep", waits.append)
+        ca._bk_download_json(self.SIGNED, "t")
+        assert waits == [ca.BK_RATE_LIMIT_MAX_WAIT_SECONDS]
 
     def test_a_connection_error_is_retried_then_fails(self, monkeypatch):
         self._serve(monkeypatch, [ca.requests.exceptions.ConnectionError(self.SIGNED)])

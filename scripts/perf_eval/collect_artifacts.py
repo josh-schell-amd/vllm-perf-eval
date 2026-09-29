@@ -73,6 +73,11 @@ DEFAULT_STORE = ROOT / "data" / "events.jsonl"
 BK_GET_MAX_ATTEMPTS = 3
 BK_GET_RETRYABLE_STATUS_CODES = frozenset({429, 502, 503, 504, 520, 522, 524})
 BK_GET_RETRY_BACKOFF_SECONDS = 2
+# Buildkite's rate limit is per organization, shared with everyone using
+# vllm's API: pause for the reset before using the last of it.
+BK_RATE_LIMIT_RESERVE = 20
+# Longest wait a rate-limit header can ask for; the window is a minute.
+BK_RATE_LIMIT_MAX_WAIT_SECONDS = 70
 
 # "Nightly run 2026-06-30: commit 93d8f834dd8acf33eb0e2a75b2711b628cb6e226"
 # Parsed for the date and vLLM commit once a build has been accepted.
@@ -632,6 +637,36 @@ def artifact_marker(provenance: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 
+def _header_seconds(headers, name: str) -> int | None:
+    try:
+        return max(0, int(float(headers.get(name, ""))))
+    except (TypeError, ValueError):
+        return None
+
+
+def _retry_wait(resp, attempt: int) -> int:
+    """How long to wait before retrying: until the rate limit resets when
+    Buildkite says when, else a short backoff."""
+    reset = _header_seconds(resp.headers, "RateLimit-Reset")
+    if reset is None:
+        reset = _header_seconds(resp.headers, "Retry-After")
+    if reset is None:
+        return BK_GET_RETRY_BACKOFF_SECONDS * attempt
+    return min(reset + 1, BK_RATE_LIMIT_MAX_WAIT_SECONDS)
+
+
+def _pace(resp) -> None:
+    """Wait for the rate limit to reset when little of it is left. A download
+    redirects to storage, so Buildkite's headers are on the first response."""
+    first = resp.history[0] if getattr(resp, "history", None) else resp
+    remaining = _header_seconds(first.headers, "RateLimit-Remaining")
+    reset = _header_seconds(first.headers, "RateLimit-Reset")
+    if remaining is not None and reset is not None and remaining < BK_RATE_LIMIT_RESERVE:
+        wait = min(reset + 1, BK_RATE_LIMIT_MAX_WAIT_SECONDS)
+        log.info("Buildkite rate limit nearly used (%d left); waiting %ds", remaining, wait)
+        time.sleep(wait)
+
+
 def _bk_get(path: str, token: str, params: dict | None = None, budget: RequestBudget | None = None):
     url = f"{BUILDKITE_API_BASE}{path}"
     headers = {"Authorization": f"Bearer {token}"}
@@ -663,10 +698,7 @@ def _bk_get(path: str, token: str, params: dict | None = None, budget: RequestBu
                 # Fail closed after retry exhaustion; in particular, never
                 # translate a 429 into an apparently complete empty page.
                 resp.raise_for_status()
-            try:
-                retry_after = max(0, int(float(resp.headers.get("Retry-After", ""))))
-            except (TypeError, ValueError):
-                retry_after = BK_GET_RETRY_BACKOFF_SECONDS * attempt
+            retry_after = _retry_wait(resp, attempt)
             log.warning(
                 "Buildkite returned HTTP %d on %s, retry %d/%d in %ds",
                 resp.status_code,
@@ -679,6 +711,7 @@ def _bk_get(path: str, token: str, params: dict | None = None, budget: RequestBu
             continue
 
         resp.raise_for_status()
+        _pace(resp)
         return resp.json()
     raise AssertionError("unreachable")
 
@@ -811,16 +844,19 @@ def _bk_download_json(
                     f"Download of artifact {label or '?'} returned HTTP "
                     f"{resp.status_code} after {BK_GET_MAX_ATTEMPTS} attempts"
                 )
+            wait = _retry_wait(resp, attempt)
             log.warning(
-                "Artifact %s returned HTTP %d, retry %d/%d",
+                "Artifact %s returned HTTP %d, retry %d/%d in %ds",
                 label or "?",
                 resp.status_code,
                 attempt,
                 BK_GET_MAX_ATTEMPTS,
+                wait,
             )
-            time.sleep(BK_GET_RETRY_BACKOFF_SECONDS * attempt)
+            time.sleep(wait)
             continue
 
+        _pace(resp)
         if resp.status_code >= 400:
             log.warning("Skipping artifact %s: HTTP %d", label or "?", resp.status_code)
             return None
