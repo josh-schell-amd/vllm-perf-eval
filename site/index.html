@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>vLLM Perf Eval</title>
+  <link rel="icon" type="image/png" href="vendor/amd.png" />
+  <!-- Scripts and data come only from this site; styles allow inline for
+       the style attributes the page and Chart.js set. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'" />
+  <link rel="stylesheet" href="app.css" />
+  <script src="js/theme.js"></script>
+</head>
+<!-- Locked until the login opens the data: nothing here is data. -->
+<body class="locked">
+<div class="container">
+  <header>
+    <div class="header-left">
+      <img class="brand-logo" src="vendor/amd.png" alt="AMD" width="32" height="32" />
+      <div>
+        <h1>vLLM Perf Eval</h1>
+        <!-- Scope is stated on the page, so an absent model reads as out of scope,
+             not as a missing run. -->
+        <div class="meta"><strong class="scope-note" title="NVIDIA workloads (H200/B200) and ad-hoc builds run upstream but are deliberately excluded.">AMD nightly runs only</strong>
+          · <span id="generated-at">Loading…</span>
+          · <a id="pipeline-link" target="_blank" rel="noopener noreferrer">vllm/perf-eval pipeline</a></div>
+      </div>
+    </div>
+    <div class="header-right">
+      <div class="filter-bar" id="filter-bar"></div>
+      <button class="btn" id="copy-link" title="Copy a link to the current view">Copy link</button>
+      <button class="btn" id="sign-out" type="button" title="Forget the login in this tab">Sign out</button>
+      <!-- Drawn rather than an emoji: ☀/☾ render at different sizes and
+           weights per platform, and neither takes the button's colour. -->
+      <!-- Labelled here too: the script sets the exact wording, but it runs
+           after the payload resolves, and a failed load must not leave the
+           button nameless. -->
+      <button class="btn theme-toggle" id="theme-toggle" type="button"
+              title="Switch colour theme" aria-label="Switch colour theme">
+        <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="4.5"/>
+          <path d="M12 1.5v2M12 20.5v2M3.6 3.6l1.4 1.4M19 19l1.4 1.4M1.5 12h2M20.5 12h2M3.6 20.4L5 19M19 5l1.4-1.4"/>
+        </svg>
+        <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+        </svg>
+      </button>
+    </div>
+  </header>
+
+  <!-- The data is encrypted; this login is the key (site/js/unlock.js). -->
+  <form class="card login-card" id="login-form" hidden>
+    <h3>Sign in</h3>
+    <p class="card-hint">The results are encrypted. Sign in with the dashboard login to view them.</p>
+    <label>Username <input id="login-user" name="username" autocomplete="username" required /></label>
+    <label>Password <input id="login-pass" name="password" type="password" autocomplete="current-password" required /></label>
+    <button class="btn" id="login-submit" type="submit">Sign in</button>
+    <div class="login-error" id="login-error" role="alert"></div>
+  </form>
+  <div id="notice-host"></div>
+  <!-- KPI row first: read the state of the night, then narrow down. -->
+  <div class="kpi-row" id="kpi-host"></div>
+  <div class="tabs" id="tabs-host"></div>
+  <div id="main"></div>
+  <div id="coverage-host"></div>
+
+  <footer>
+    <span id="retention-note"></span>
+    <a id="download-data" download="perf_eval.json">Download the data (JSON)</a>
+    <span>Feedback or questions: Josh Schell,
+      <a href="mailto:josh.schell@amd.com?subject=Perf%20Eval%20Dashboard%20feedback">josh.schell@amd.com</a></span>
+    <span>AMD nightly performance and accuracy from the <a id="pipeline-link-footer" target="_blank" rel="noopener noreferrer">vllm/perf-eval</a> Buildkite pipeline</span>
+  </footer>
+</div>
+
+<div class="overlay" id="overlay">
+  <div class="overlay-panel" role="dialog" aria-modal="true" aria-labelledby="overlay-title">
+    <button class="overlay-close" id="overlay-close" aria-label="Close">&times;</button>
+    <h3 id="overlay-title"></h3>
+    <div class="overlay-sub" id="overlay-sub"></div>
+    <div class="overlay-summary" id="overlay-summary"></div>
+    <div class="chart-wrap" id="history-chart-wrap"><canvas id="history-chart"></canvas></div>
+    <div class="table-scroll" id="overlay-table"></div>
+  </div>
+</div>
+
+<!-- Chart.js 4.4.1, vendored: a blocked CDN would leave blank charts with no
+     error. Provenance: site/vendor/README.md. -->
+<script src="vendor/chart.umd.min.js"></script>
+<script src="js/analysis.js"></script>
+<script src="js/unlock.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>

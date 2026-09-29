@@ -1,0 +1,220 @@
+name: Collect and Deploy
+
+# Ingests AMD nightly perf-eval results from Buildkite artifacts, rebuilds the
+# published payload, and deploys the static site.
+#
+# Where things live (docs/deploying.md). This repo is public and holds no data:
+#   STATE_REPO, branch dashboard-state   data/events.jsonl, in a private repo
+#   GitHub Pages                          the site and the payload, sealed with the dashboard login
+#   main                                  source only
+on:
+  schedule:
+    # Once a day, around noon US Central, after the nightly (recent ones
+    # finished 10:30-13:00 UTC; its schedule lives in the Buildkite UI).
+    - cron: '17 17 * * *'
+  # A change to the page, or to how the payload is built, redeploys from the
+  # stored data; only the schedule and a manual run collect from Buildkite.
+  push:
+    branches: [main]
+    paths:
+      - 'site/**'
+      - 'scripts/build_site.py'
+      - 'scripts/perf_eval/__init__.py'
+      - 'scripts/perf_eval/aggregate.py'
+      - 'scripts/perf_eval/normalize.py'
+      - 'scripts/perf_eval/store.py'
+      - '.github/workflows/collect-and-deploy.yml'
+  workflow_dispatch:
+    inputs:
+      rebuild:
+        description: >-
+          Re-download the last 30 days of results instead of only new ones. Use
+          after changing how results are labeled, or to pick up anything
+          missed. Nothing is replaced if it finds fewer results than are stored.
+        required: false
+        type: boolean
+        default: false
+      deploy:
+        description: 'Publish the site when done'
+        required: false
+        type: boolean
+        default: true
+
+# Serialize: two runs pushing the store or deploying would race.
+concurrency:
+  group: perf-eval-collect
+  cancel-in-progress: false
+
+# Each job asks for only what it uses.
+permissions: {}
+
+jobs:
+  collect:
+    name: Collect
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # The store is pushed with STATE_REPO_TOKEN, not this repo's token.
+    permissions:
+      contents: read
+    env:
+      # The private repo holding the event store.
+      STATE_REPO: josh-schell-amd/perf-eval-state
+    outputs:
+      uploaded: ${{ steps.upload.outcome == 'success' }}
+    steps:
+      # Pinned to the same commit SHAs vllm-ci-dashboard uses.
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: '3.12'
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: '0.12.19'
+
+      # Runtime packages only (--no-dev), at the versions uv.lock pins. This
+      # job holds the Buildkite token and a write token, so nothing runs here
+      # that the collector does not need; the test and lint tools run in CI.
+      - name: Install dependencies
+        run: |
+          uv sync --locked --no-dev --python 3.12
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+
+      # A missing or unreachable store branch fails the run, rather than
+      # starting from an empty store that would later overwrite the real one.
+      # No checkout keeps the token in .git/config; only the persist step pushes.
+      - name: Check out the event store
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: ${{ env.STATE_REPO }}
+          token: ${{ secrets.STATE_REPO_TOKEN }}
+          ref: dashboard-state
+          path: state
+          persist-credentials: false
+
+      # The deploy check compares against what is actually live, so a failed
+      # or skipped deploy is not mistaken for a published one. If it cannot be
+      # fetched or opened, the payload counts as changed and is deployed.
+      - name: Fetch the published payload
+        env:
+          SITE_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}
+          DASHBOARD_USERNAME: ${{ secrets.DASHBOARD_USERNAME }}
+          DASHBOARD_PASSWORD: ${{ secrets.DASHBOARD_PASSWORD }}
+        run: |
+          mkdir -p live
+          curl -fsSL --retry 3 -o live/perf_eval.sealed.json "$SITE_URL/perf_eval.sealed.json?run=$GITHUB_RUN_ID" \
+            || echo "No published payload at $SITE_URL; treating it as changed."
+          python scripts/perf_eval/seal.py --open live/perf_eval.sealed.json --output live/perf_eval.json
+
+      # Fails closed on a malformed store before anything overwrites it, and
+      # applies retention so a legacy unbounded log is migrated in place.
+      - name: Validate and bound the event store
+        run: python scripts/perf_eval/merge_events.py --local state/data/events.jsonl
+
+      # The only step that receives the Buildkite token; skipped on a push.
+      # Steady state is a few listings plus the new nightly's downloads; the
+      # ceiling aborts if that ever stops being true.
+      - name: Ingest Buildkite artifacts
+        if: github.event_name != 'push'
+        env:
+          BUILDKITE_TOKEN: ${{ secrets.BUILDKITE_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Optional: reads gated models' config.json for their precision.
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          REBUILD: ${{ inputs.rebuild && '1' || '' }}
+        run: >-
+          python scripts/perf_eval/collect_artifacts.py
+          --store state/data/events.jsonl --max-requests 3000 ${REBUILD:+--rebuild}
+
+      # Refuses to write a payload that fails its sanity checks.
+      - name: Aggregate the published payload
+        run: python scripts/perf_eval/aggregate.py --store state/data/events.jsonl --output data/perf_eval.json
+
+      # aggregate.py restamps generated_at every run, so the payload always
+      # differs byte-wise. Publishing on that alone burns a Pages build to
+      # republish identical numbers, and Pages allows only ~10 builds an hour.
+      - name: Has anything actually changed?
+        id: changed
+        run: python scripts/perf_eval/payload_changed.py --current data/perf_eval.json --previous live/perf_eval.json
+
+      # Nothing new was collected on a push, so there is nothing to persist.
+      # Only main writes: a manual run from another branch is a preview.
+      # Not forced: a push that raced another writer fails instead of
+      # overwriting it.
+      - name: Persist the event store
+        if: github.event_name != 'push' && github.ref == 'refs/heads/main'
+        working-directory: state
+        env:
+          GH_TOKEN: ${{ secrets.STATE_REPO_TOKEN }}
+          GIT_AUTHOR_NAME: github-actions[bot]
+          GIT_AUTHOR_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+          GIT_COMMITTER_NAME: github-actions[bot]
+          GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+        run: |
+          set -euo pipefail
+          git add data/events.jsonl
+          if git diff --cached --quiet; then
+            echo "Event store unchanged; nothing to persist."
+            exit 0
+          fi
+          git commit -q -m "perf-eval state: run ${GITHUB_RUN_ID}"
+          AUTH="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          git -c http.extraheader="$AUTH" push origin HEAD:dashboard-state
+
+      # Seals the payload with the login; refuses to build without it.
+      - name: Build the site
+        env:
+          DASHBOARD_USERNAME: ${{ secrets.DASHBOARD_USERNAME }}
+          DASHBOARD_PASSWORD: ${{ secrets.DASHBOARD_PASSWORD }}
+        run: python scripts/build_site.py
+
+      # Scheduled runs deploy only when the data changed. A push or manual run
+      # always deploys, since the page itself may have changed. Only main
+      # deploys: a manual run from another branch is a preview.
+      - name: Upload the site
+        id: upload
+        if: >-
+          github.ref == 'refs/heads/main' &&
+          (steps.changed.outputs.changed == 'true' || github.event_name != 'schedule') &&
+          (github.event_name != 'workflow_dispatch' || inputs.deploy)
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: ./_site
+
+      - name: Summary
+        if: always()
+        env:
+          DEPLOY_SKIPPED: ${{ steps.changed.outputs.changed == 'false' && github.event_name == 'schedule' && '1' || '' }}
+        run: >-
+          python scripts/perf_eval/aggregate.py --summarize data/perf_eval.json
+          ${DEPLOY_SKIPPED:+--deploy-skipped} >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Note a preview run
+        if: always() && github.ref != 'refs/heads/main'
+        run: |
+          echo "- Preview of \`${GITHUB_REF_NAME}\`: nothing was saved or published; only main does that." >> "$GITHUB_STEP_SUMMARY"
+
+  # A separate job so only it holds the Pages and OIDC permissions, and so the
+  # github-pages environment (main only) is not entered by a preview run.
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: collect
+    if: github.ref == 'refs/heads/main' && needs.collect.outputs.uploaded == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

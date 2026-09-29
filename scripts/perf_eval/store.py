@@ -1,0 +1,384 @@
+"""The event store, data/events.jsonl: one event per line.
+
+Every write compacts it and replaces the file atomically. Event kinds:
+
+    perf_result, accuracy_result   one nightly result, timed by `date`
+    expected_configs               the configs the recipes define; newest kept
+    nightly_run                    a nightly build seen, with or without results
+    buildkite_artifact_ingested    an artifact already downloaded; folded into
+    buildkite_artifact_identity_index   one index event at compaction
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+import tempfile
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+
+from perf_eval import WINDOW_DAYS
+from perf_eval.normalize import parallel_key, parallelism_of
+
+log = logging.getLogger(__name__)
+
+RESULT_EVENTS = frozenset({"perf_result", "accuracy_result"})
+EXPECTED_CONFIGS_EVENT = "expected_configs"
+ARTIFACT_MARKER_EVENT = "buildkite_artifact_ingested"
+ARTIFACT_INDEX_EVENT = "buildkite_artifact_identity_index"
+NIGHTLY_RUN_EVENT = "nightly_run"
+
+
+# ---------------------------------------------------------------------------
+# Timestamps
+# ---------------------------------------------------------------------------
+
+
+def parse_time(value: object) -> datetime | None:
+    """A UTC datetime from an ISO timestamp or date string, or None."""
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).strip())
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def finished_at(result: dict) -> datetime | None:
+    """When the nightly behind a result finished: its `date`."""
+    return parse_time(result.get("date"))
+
+
+def received_at(event: dict) -> datetime | None:
+    """When the collector recorded an event: its `received_at`."""
+    return parse_time(event.get("received_at"))
+
+
+def iso(value: datetime) -> str:
+    return value.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+# ---------------------------------------------------------------------------
+# Result identity: what counts as the same result
+# ---------------------------------------------------------------------------
+
+
+def nightly_identity(event: dict) -> str:
+    """The nightly a result belongs to: the day it is named for and the vLLM
+    commit it tested, else its build number.
+
+    A rebuild of a nightly (same day, same commit) folds into it; two nights
+    that tested one commit stay two nightlies. Not build_commit, which is the
+    perf-eval repo's commit and is shared by many nightlies.
+    """
+    day = str(event.get("nightly_date") or "").strip()
+    commit = str(event.get("vllm_commit") or "").strip()
+    if day or commit:
+        return f"nightly:{day}:{commit}"
+    return f"build:{event.get('build_number')}"
+
+
+def perf_config_identity(event: dict) -> tuple:
+    """The perf config, without the nightly or build that measured it.
+
+    Both identities below start from this, then add their own scope: a build
+    for collection, a nightly for compaction. An absent precision is ``""`` so
+    the two cannot disagree about a missing tag.
+    """
+    return (
+        str(event.get("model") or "").strip(),
+        str(event.get("device") or "").strip(),
+        parallel_key(parallelism_of(event)),
+        event.get("precision") or "",
+        event.get("isl"),
+        event.get("osl"),
+        event.get("conc"),
+    )
+
+
+def result_identity(event: dict) -> tuple:
+    """What makes two result events the same result, for compaction.
+
+    A perf result is one config of one nightly. An accuracy result is one
+    workload of one nightly; its task rows are merged rather than kept apart.
+    A retried nightly shares a vLLM commit, so it folds in here.
+    """
+    kind = event.get("event")
+    nightly = nightly_identity(event)
+    if kind == "perf_result":
+        return (kind, nightly, *perf_config_identity(event))
+    if kind == "accuracy_result":
+        return (
+            kind,
+            nightly,
+            str(event.get("model") or "").strip(),
+            str(event.get("device") or "").strip(),
+            str(event.get("workload") or "").strip(),
+        )
+    raise ValueError(f"not a result event: {kind!r}")
+
+
+def event_key(event: dict) -> tuple:
+    """What makes two result events the same result within one build.
+
+    Narrower than ``result_identity``: a retried nightly is a new build number,
+    so the collector still appends it and compaction folds it in. Accuracy
+    keeps its task rows in the key, because two tasks of one workload arrive
+    as separate artifacts and dropping the second would lose its scores.
+    """
+    if event.get("event") == "perf_result":
+        return ("perf", event.get("build_number"), *perf_config_identity(event))
+    if event.get("event") == "accuracy_result":
+        tasks = tuple(
+            sorted((row.get("task"), row.get("metric")) for row in event.get("results") or [])
+        )
+        return (
+            "accuracy",
+            event.get("build_number"),
+            str(event.get("workload") or "").strip(),
+            tasks,
+        )
+    raise ValueError(f"not a result event: {event.get('event')!r}")
+
+
+def merge_result_events(older: dict, newer: dict) -> dict:
+    """Combine two events for one result; newer fields win.
+
+    One nightly can report a result across several artifacts, so the
+    measurements are unioned: perf metrics by name, accuracy rows by
+    (task, metric).
+    """
+    kind = newer.get("event")
+    merged = {**older, **newer}
+    if kind == "perf_result":
+        merged["metrics"] = {**(older.get("metrics") or {}), **(newer.get("metrics") or {})}
+    elif kind == "accuracy_result":
+        rows = {}
+        for event in (older, newer):
+            for row in event.get("results") or []:
+                if isinstance(row, dict):
+                    rows[(str(row.get("task") or ""), str(row.get("metric") or ""))] = row
+        merged["results"] = [rows[key] for key in sorted(rows)]
+    else:
+        raise ValueError(f"not a result event: {kind!r}")
+    return merged
+
+
+# ---------------------------------------------------------------------------
+# Artifact index: what has already been downloaded
+# ---------------------------------------------------------------------------
+
+
+def artifact_key(record: dict) -> str | None:
+    """The Buildkite artifact ID a record came from, if it has one."""
+    return str(record.get("buildkite_artifact_id") or "").strip() or None
+
+
+def _index_row(row: object) -> tuple[str, datetime | None] | None:
+    """One ``["id", <artifact ID>, <downloaded at>]`` entry, or None if malformed."""
+    if not (isinstance(row, list) and len(row) == 3 and row[0] == "id"):
+        return None
+    _, artifact_id, downloaded_at = row
+    artifact_id = str(artifact_id).strip()
+    return (artifact_id, parse_time(downloaded_at)) if artifact_id else None
+
+
+def _artifact_rows(event: dict) -> list[tuple[str, datetime | None]]:
+    """(artifact ID, downloaded at) for every artifact an event names."""
+    if event.get("event") == ARTIFACT_INDEX_EVENT:
+        rows = (_index_row(row) for row in event.get("identities") or [])
+        return [row for row in rows if row is not None]
+    artifact_id = artifact_key(event)
+    return [(artifact_id, received_at(event))] if artifact_id else []
+
+
+def artifact_keys_from_event(event: dict) -> tuple[str, ...]:
+    """Artifact IDs an event shows as already downloaded."""
+    return tuple(key for key, _ in _artifact_rows(event))
+
+
+# ---------------------------------------------------------------------------
+# Compaction
+# ---------------------------------------------------------------------------
+
+
+def _received_sort_key(event: dict) -> datetime:
+    """``received_at`` for ordering; a missing or unparseable one sorts oldest."""
+    return received_at(event) or datetime.min.replace(tzinfo=UTC)
+
+
+def _recent_results(events: list[dict], cutoff: datetime) -> list[dict]:
+    """Nightly results finished since ``cutoff``, duplicates merged, in first-seen order.
+
+    Older and newer are by nightly time: a backfill can append an older rebuild later.
+    """
+    results: dict[tuple, tuple[dict, datetime]] = {}
+    for event in events:
+        if event.get("event") not in RESULT_EVENTS or event.get("nightly") is not True:
+            continue
+        when = finished_at(event)
+        if when is None or when < cutoff:
+            continue
+        key = result_identity(event)
+        if key not in results:
+            results[key] = (event, when)
+            continue
+        kept, kept_when = results[key]
+        if when >= kept_when:
+            results[key] = (merge_result_events(older=kept, newer=event), when)
+        else:
+            results[key] = (merge_result_events(older=event, newer=kept), kept_when)
+    return [event for event, _ in results.values()]
+
+
+def _newest_expected(events: list[dict]) -> dict | None:
+    """The newest expected_configs snapshot, kept however old: it is the current recipe set."""
+    newest = None
+    for event in events:
+        if event.get("event") != EXPECTED_CONFIGS_EVENT:
+            continue
+        if newest is None or _received_sort_key(event) >= _received_sort_key(newest):
+            newest = event
+    return newest
+
+
+def _recent_artifacts(events: list[dict], cutoff: datetime) -> dict[str, datetime]:
+    """When each artifact downloaded since ``cutoff`` was last downloaded."""
+    artifacts: dict[str, datetime] = {}
+    for event in events:
+        for artifact_id, seen in _artifact_rows(event):
+            if seen is not None and seen >= cutoff:
+                artifacts[artifact_id] = max(seen, artifacts.get(artifact_id, seen))
+    return artifacts
+
+
+def _recent_runs(events: list[dict], cutoff: datetime) -> list[dict]:
+    """The newest record of each nightly build that finished since ``cutoff``."""
+    runs: dict[str, dict] = {}
+    for event in events:
+        if event.get("event") != NIGHTLY_RUN_EVENT:
+            continue
+        when = finished_at(event)
+        if when is None or when < cutoff:
+            continue
+        key = str(event.get("build_number"))
+        if key not in runs or _received_sort_key(event) >= _received_sort_key(runs[key]):
+            runs[key] = event
+    return [runs[key] for key in sorted(runs)]
+
+
+def compact_events(events: list[dict]) -> list[dict]:
+    """The events worth keeping: nightly results and nightly builds from the
+    last WINDOW_DAYS, the newest expected_configs snapshot, and an index of the
+    other artifacts downloaded in that time."""
+    cutoff = datetime.now(UTC) - timedelta(days=WINDOW_DAYS)
+
+    compacted = _recent_results(events, cutoff) + _recent_runs(events, cutoff)
+    expected = _newest_expected(events)
+    if expected is not None:
+        compacted.append(expected)
+
+    carried = {artifact_key(event) for event in compacted}
+    index = sorted(
+        ["id", artifact_id, iso(seen)]
+        for artifact_id, seen in _recent_artifacts(events, cutoff).items()
+        if artifact_id not in carried
+    )
+    if index:
+        compacted.append({"event": ARTIFACT_INDEX_EVENT, "identities": index})
+    return compacted
+
+
+# ---------------------------------------------------------------------------
+# File I/O
+# ---------------------------------------------------------------------------
+
+
+def encoded_events(events: list[dict]) -> bytes:
+    return "".join(
+        json.dumps(event, sort_keys=True, separators=(",", ":")) + "\n" for event in events
+    ).encode("utf-8")
+
+
+def encoded_json(payload: dict) -> bytes:
+    return (json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+
+
+def _write_atomic(path: Path, data: bytes) -> None:
+    """Write to a temp file beside path, then rename it over path."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temp_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    temp_path = Path(temp_name)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        # mkstemp creates the file owner-only (0600); give the result normal
+        # read permissions (0644), since it replaces the real file.
+        os.chmod(temp_path, 0o644)
+        os.replace(temp_path, path)
+    finally:
+        if temp_path.exists():
+            temp_path.unlink()
+
+
+def write_events_atomic(store_path: Path, events: list[dict]) -> int:
+    """Compact events and replace the store with them; return how many were kept."""
+    compacted = compact_events(events)
+    _write_atomic(store_path, encoded_events(compacted))
+    return len(compacted)
+
+
+def append_events(store_path: Path, events: list[dict]) -> int:
+    """Add events to the store, then compact and rewrite it."""
+    return write_events_atomic(store_path, [*read_events_strict(store_path), *events])
+
+
+def write_json_atomic(path: Path, payload: dict) -> None:
+    _write_atomic(path, encoded_json(payload))
+
+
+def read_events_strict(store_path: Path) -> list[dict]:
+    """Read the store, failing on any malformed line.
+
+    Every write replaces the whole file, so skipping a bad line here would
+    delete the data it held on the next write.
+    """
+    if not store_path.exists():
+        return []
+    out: list[dict] = []
+    for number, line in enumerate(store_path.read_text(encoding="utf-8").splitlines(), start=1):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                f"invalid perf-eval JSONL at {store_path}:{number}: {exc.msg}"
+            ) from exc
+        if not isinstance(event, dict):
+            raise ValueError(
+                f"invalid perf-eval JSONL at {store_path}:{number}: event must be a JSON object"
+            )
+        if event.get("event") == ARTIFACT_INDEX_EVENT:
+            identities = event.get("identities")
+            rows = _artifact_rows(event)
+            if (
+                not isinstance(identities, list)
+                or len(rows) != len(identities)
+                or any(seen is None for _, seen in rows)
+            ):
+                raise ValueError(
+                    f"invalid perf-eval JSONL at {store_path}:{number}: "
+                    "artifact identity index is not canonical"
+                )
+        out.append(event)
+    return out

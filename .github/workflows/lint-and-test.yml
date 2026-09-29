@@ -1,0 +1,78 @@
+name: Lint and Test
+
+# Deliberately receives no Buildkite token: everything here is offline.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lint-and-test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Lint, Type Check and Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # Actions are pinned to commit SHAs, the same ones vllm-ci-dashboard
+      # uses; a tag can be moved to different code, a SHA cannot.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: '3.12'
+
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: '0.12.19'
+
+      # Exactly what uv.lock pins, so a new ruff or pyright release cannot
+      # break CI with no code change. --locked fails if the lock is stale.
+      - name: Install dependencies
+        run: |
+          uv sync --locked --python 3.12
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+
+      - name: Lint
+        run: ruff check .
+
+      - name: Format check
+        run: ruff format --check .
+
+      - name: Type check (pyright, gating)
+        run: pyright
+
+      # ty is fast and from the ruff authors, but it is still 0.0.x: its
+      # diagnostics change between releases, so gating on it would let an
+      # unrelated version bump break CI. Non-blocking second opinion for now;
+      # promote it to gating once it reaches a stable release.
+      - name: Type check (ty, advisory)
+        continue-on-error: true
+        run: ty check scripts tests
+
+      - name: Test
+        run: pytest -q
+
+      # The page's pure logic, site/js/analysis.js. The runner's preinstalled
+      # Node is enough: the tests use only node:test and node:assert.
+      - name: Test the page's logic
+        run: node --test tests/js/*.test.js
+
+      # Proves the collectors and the page still agree on the payload shape.
+      - name: Build the site from a synthetic payload
+        run: |
+          set -euo pipefail
+          mkdir -p data
+          : > data/events.jsonl
+          python scripts/perf_eval/aggregate.py
+          python scripts/build_site.py
+          test -f _site/index.html
+          test -f _site/perf_eval.json
