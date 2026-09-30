@@ -41,6 +41,41 @@ tests/
   tokens.
 - Actions are pinned to commit SHAs.
 
+## Local setup
+
+Install [uv](https://docs.astral.sh/uv/), then:
+
+```bash
+uv sync                  # creates .venv with exactly what uv.lock pins
+. .venv/bin/activate     # Windows: .venv\Scripts\activate
+```
+
+## Run the pipeline against real data
+
+The sequence the workflow runs, minus the branch commits. Read-only against
+Buildkite; ingest only appends what is new to `data/events.jsonl`, so it is
+safe to re-run as often as you like.
+
+```bash
+export BUILDKITE_TOKEN=bkua_...          # read-only: Read Builds + Read Artifacts
+
+python scripts/perf_eval/collect_artifacts.py   # the last 30 days, the default
+python scripts/perf_eval/aggregate.py
+DASHBOARD_USERNAME=viewer DASHBOARD_PASSWORD=local-test python scripts/build_site.py
+python -m http.server --directory _site 8000
+```
+
+Then open <http://localhost:8000> and sign in with the username/password
+above.
+
+- Only ingest (`collect_artifacts.py`) needs the Buildkite token.
+  `aggregate.py` and `build_site.py` read the local store.
+- The workload recipes come from the public `vllm-project/perf-eval` repo, so
+  no GitHub token is needed. If you hit GitHub's anonymous rate limit,
+  `export GITHUB_TOKEN="$(gh auth token)"`.
+- Add `--dry-run` to the collector to see what it would download, with no
+  downloads and no writes.
+
 ## Checks
 
 ```bash
@@ -51,9 +86,6 @@ pyright                      # type check, gating in CI
 ty check scripts tests       # second opinion, advisory
 python scripts/perf_eval/secrets_scan.py
 ```
-
-To run the pipeline locally against real data, see the
-[quick start](../README.md#quick-start).
 
 ## Chart.js is vendored
 
