@@ -259,3 +259,10 @@ test('a failing build is still going too; a failed one is a gap', () => {
   const failed = a.nightlyStatus([run(606, '2026-09-29', 0, 'failed')], latest, at);
   assert.deepEqual(gapsOf(failed), [['2026-09-29', ['606']]]);
 });
+
+test('only a build still going counts as running', () => {
+  assert.equal(a.isOngoing({ state: 'running' }), true);
+  assert.equal(a.isOngoing({ state: 'failing' }), true);
+  assert.equal(a.isOngoing({ state: 'failed' }), false);
+  assert.equal(a.isOngoing({ state: 'passed' }), false);
+});

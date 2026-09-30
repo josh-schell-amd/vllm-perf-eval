@@ -216,6 +216,7 @@ function runDay(run) { return run.nightly_date || String(run.date || '').slice(0
 // recorded at all (known), or an unknown cause when they are not. Newest first.
 // Buildkite states of a build still going ("failing" once a job has failed).
 const ONGOING_STATES = new Set(['running', 'failing']);
+function isOngoing(run) { return ONGOING_STATES.has(run.state); }
 
 function nightlyStatus(runs, latest, collectedAt) {
   const known = runs.length > 0;
@@ -224,8 +225,8 @@ function nightlyStatus(runs, latest, collectedAt) {
   // already has results.
   const later = runs.filter(r => !r.amd_results && runDay(r) > latest.day);
   // Still going is not a gap: its AMD results come once its AMD jobs finish.
-  const running = later.filter(r => ONGOING_STATES.has(r.state));
-  const empty = later.filter(r => !ONGOING_STATES.has(r.state));
+  const running = later.filter(isOngoing);
+  const empty = later.filter(r => !isOngoing(r));
   const days = new Set(empty.map(runDay));
   for (let x = dayX(latest.day) + DAY_MS; x <= dayX(fmtDate(collectedAt - NIGHTLY_DUE_MS)); x += DAY_MS) {
     days.add(fmtDate(x));
@@ -337,6 +338,7 @@ const api = {
   toCsv,
   paretoFrontier,
   nightlyStatus,
+  isOngoing,
 };
 if (typeof module === 'object' && module.exports) module.exports = api;
 else root.PerfAnalysis = api;

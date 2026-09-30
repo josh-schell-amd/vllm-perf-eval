@@ -102,7 +102,8 @@ URL, so **Copy link** reproduces the view.
 - The x-axis labels every day, none skipped, as ATOM does, from that chart's
   own points: a day with a point shows the short vLLM commit it measured
   (`9/25 abc1234`, the date in the text colour, the commit in blue). A day without one reads `9/24 missing` in orange: no
-  nightly ran, or it ran without these configs. Days before the chart's first
+  nightly ran, or it ran without these configs. A day whose nightly is still
+  going reads `9/29 running` in grey: not missing, just not finished. Days before the chart's first
   point, or whose nightly is not due yet, show the date alone. The history
   chart uses the same axis.
 - The chart window (1–30 days) changes the charts only, never the regression

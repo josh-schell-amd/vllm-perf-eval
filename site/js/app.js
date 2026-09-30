@@ -19,6 +19,7 @@ const {
   verdict,
   accuracyVerdict,
   nightKey,
+  isOngoing,
   reportedTonight,
   comparedOvernight,
   REG_TIERS,
@@ -1209,7 +1210,9 @@ function commitsByDay(points) {
 // ATOM labels it: the date and the commit in two colours. A day without one,
 // between the chart's first point and the newest nightly that is due, reads
 // "9/24 missing" in orange: no nightly ran, or it ran without these configs.
-// Days before the chart's first point or not yet due show the date alone.
+// A day whose nightly is still going reads "9/29 running" in grey instead: not
+// missing, just not finished. Days before the chart's first point or not yet
+// due show the date alone.
 //
 // Returns { scale, labels }: pass labels as a chart plugin. Chart.js draws a
 // tick label in one colour, so the scale lays the text out invisibly and the
@@ -1220,11 +1223,13 @@ function dayAxis(min, max, theme, points) {
   const commits = commitsByDay(points);
   const first = [...commits.keys()].sort()[0] || '';
   const due = fmtDate(parseTime(DATA.generated_at) - 40 * 3600000);
+  const running = new Set(DATA.nightly_runs.filter(isOngoing).map(runDay));
   const isMissing = day => !commits.has(day) && day > first && day <= due;
   const colors = {
     date: cssVar('--text-primary'),
     commit: cssVar('--accent-blue'),
     missing: cssVar('--accent-orange'),
+    running: cssVar('--text-secondary'),
     plain: theme.tick,
   };
   // A label as [text, colour] pieces, in reading order.
@@ -1234,6 +1239,7 @@ function dayAxis(min, max, theme, points) {
     const label = Number(month) + '/' + Number(date);
     const sha = commits.get(day);
     if (sha && sha !== '—') return [[label, colors.date], [' ' + sha, colors.commit]];
+    if (running.has(day) && day > first) return [[label + ' running', colors.running]];
     if (isMissing(day)) return [[label + ' missing', colors.missing]];
     return [[label, colors.plain]];
   };
