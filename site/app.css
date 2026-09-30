@@ -166,9 +166,6 @@ a:hover .ext-inline, .reg-item.linked:hover .ext-inline { opacity: 1; transform:
 .hint-key i.reg { border: 2px solid var(--accent-red); }
 .hint-key i.absent { opacity: 0.35; }
 .hint-key .failed-mark { color: var(--accent-orange); font-size: 12px; }
-.hint-key .frontier-mark { color: var(--text-tertiary); letter-spacing: -1px; }
-.peak-line { display: flex; flex-wrap: wrap; gap: 6px 24px; font-size: 12px; color: var(--text-secondary); }
-.peak-line .peak-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-tertiary); }
 .hint-key i.edge { border-color: transparent; }
 .hint-key i.edge.minor { background: var(--accent-yellow); }
 .hint-key i.edge.moderate { background: var(--accent-orange); }

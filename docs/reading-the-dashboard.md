@@ -113,11 +113,6 @@ URL, so **Copy link** reproduces the view.
 
 - Interactivity (1 / TPOT) against Total Throughput, one curve per shape
   across concurrency, per model and device.
-- Above the charts: the peak throughput and best mean TPOT in view, with the
-  configs that set them.
-- A dashed **Pareto frontier** joins the points no other point beats on both
-  interactivity and throughput: the best tradeoff available at each
-  interactivity.
 - A concurrency scaling chart, and a throughput heatmap by ISL/OSL ×
   concurrency.
 - Red ring = throughput regression overnight.

@@ -236,13 +236,6 @@ test('CSV leaves negative numbers alone', () => {
   assert.equal(a.toCsv([[-0.5]]), '-0.5\n');
 });
 
-test('the Pareto frontier keeps only points nothing beats on both axes', () => {
-  const frontier = a.paretoFrontier([
-    { x: 10, y: 100 }, { x: 20, y: 80 }, { x: 15, y: 70 }, { x: 30, y: 40 }, { x: 5, y: 90 },
-  ]);
-  assert.deepEqual(frontier.map(p => [p.x, p.y]), [[10, 100], [20, 80], [30, 40]]);
-});
-
 test('a nightly still running is not a gap, and says what it waits on', () => {
   const running = { ...run(606, '2026-09-29', 0, 'running'), amd_pending: ['kimi_k2_5_mi300x'] };
   const s = a.nightlyStatus([running, run(605, '2026-09-28', 39)],

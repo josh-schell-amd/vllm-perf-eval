@@ -276,17 +276,6 @@ function toCsv(rows) {
   return rows.map(row => row.map(cell).join(',')).join('\n') + '\n';
 }
 
-// The points no other point beats on both x and y (higher is better on
-// both), in x order: the best tradeoff available at each x.
-function paretoFrontier(points) {
-  const frontier = [];
-  let bestY = -Infinity;
-  points.slice().sort((a, b) => b.x - a.x || b.y - a.y).forEach(p => {
-    if (p.y > bestY) { frontier.push(p); bestY = p.y; }
-  });
-  return frontier.reverse();
-}
-
 // The shared chart x-axis. Both ends sit at noon, where nightlies are drawn,
 // so each point lands on its day's tick. The full window starts the day
 // before the cutoff: a nightly finished inside it can be named for the day
@@ -336,7 +325,6 @@ const api = {
   runRows,
   sortRows,
   toCsv,
-  paretoFrontier,
   nightlyStatus,
   isOngoing,
 };

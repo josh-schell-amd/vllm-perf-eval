@@ -38,7 +38,6 @@ const {
   runRows,
   sortRows,
   toCsv,
-  paretoFrontier,
   nightlyStatus,
 } = window.PerfAnalysis;
 
@@ -982,36 +981,6 @@ function accuracyTonight() {
     })),
     threshold: accuracyPoints(THRESHOLDS.accuracy_abs),
   };
-}
-
-// Short enough for a card: model, device, shape and concurrency.
-function cardConfigLabel(c) { return c.shortModel + ' · ' + c.device + ' · ' + shapeLabel(c); }
-
-// The highest total throughput and lowest mean TPOT among the shown configs'
-// newest runs, with the configs that set them. Follows the filters.
-function bestInView() {
-  const peakMetric = METRIC_BY_KEY.tput_per_gpu, fastMetric = METRIC_BY_KEY.mean_tpot;
-  if (!peakMetric) return null;
-  let peak = null, fastest = null;
-  shownConfigs().forEach(config => {
-    const tput = pointsIn(config, peakMetric.key).at(-1);
-    if (tput && (!peak || tput.value > peak.value)) peak = { config: config, value: tput.value };
-    const tpot = fastMetric && pointsIn(config, fastMetric.key).at(-1);
-    if (tpot && tpot.value > 0 && (!fastest || tpot.value < fastest.value)) fastest = { config: config, value: tpot.value };
-  });
-  return peak ? { peak, fastest, peakMetric, fastMetric } : null;
-}
-
-// The peak throughput and best TPOT in view, as a line for the tradeoff tab.
-function peakHint() {
-  const best = bestInView();
-  if (!best) return '';
-  const stat = (label, v, m, config) => '<span class="peak-stat"><span class="peak-label">' + label
-    + '</span> <b>' + esc(compact(display(v, m), m.digits)) + ' ' + esc(unitOf(m)) + '</b> '
-    + '<span class="neutral">' + esc(cardConfigLabel(config)) + '</span></span>';
-  return '<div class="peak-line">' + stat('Peak', best.peak.value, best.peakMetric, best.peak.config)
-    + (best.fastest ? stat('Best TPOT', best.fastest.value, best.fastMetric, best.fastest.config) : '')
-    + '</div>';
 }
 
 /* ================================================================
@@ -2163,14 +2132,7 @@ function renderTradeoffTab() {
     return { ...g, curves: [...curves.values()].filter(c => c.points.length) };
   }).filter(g => g.curves.length);
 
-  let html = '<div class="card"><h3>Throughput vs latency</h3>'
-    + '<div class="hint-keys">'
-    + '<span class="hint-key">' + esc(intvtyLabel) + ' (1/TPOT) vs ' + esc(tputMetric.label.toLowerCase())
-    + ', both ▲ higher is better</span>'
-    + '<span class="hint-key">a line per shape, a point per concurrency (cN)</span>'
-    + '<span class="hint-key"><span class="frontier-mark">- -</span>Pareto frontier</span>'
-    + '<span class="hint-key"><i class="reg"></i>regressed</span>'
-    + '</div>' + peakHint() + '</div>';
+  let html = '<div class="card"><h3>Throughput vs latency</h3></div>';
 
   groups.forEach((g, i) => {
     html += '<div class="tradeoff-pair">'
@@ -2277,23 +2239,6 @@ function drawTradeoffScatter(group, canvasId, tputMetric, intvtyMetric) {
     };
   }).filter(ds => ds.data.length);
   if (!datasets.length) return;
-  // The best tradeoff across every shape: where to look for the ceiling.
-  const frontier = paretoFrontier(datasets.flatMap(ds => ds.data));
-  if (frontier.length > 1) {
-    datasets.push({
-      label: 'Pareto frontier',
-      data: frontier,
-      borderColor: theme.tick,
-      backgroundColor: theme.tick,
-      borderWidth: 1.5,
-      borderDash: [6, 4],
-      pointRadius: 0,
-      pointHoverRadius: 0,
-      showLine: true,
-      fill: false,
-      tension: 0,
-    });
-  }
   new Chart(canvas, {
     type: 'scatter',
     data: { datasets: datasets },
