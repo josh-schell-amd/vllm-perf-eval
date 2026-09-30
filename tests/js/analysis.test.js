@@ -242,3 +242,20 @@ test('the Pareto frontier keeps only points nothing beats on both axes', () => {
   ]);
   assert.deepEqual(frontier.map(p => [p.x, p.y]), [[10, 100], [20, 80], [30, 40]]);
 });
+
+test('a nightly still running is not a gap, and says what it waits on', () => {
+  const running = { ...run(606, '2026-09-29', 0, 'running'), amd_pending: ['kimi_k2_5_mi300x'] };
+  const s = a.nightlyStatus([running, run(605, '2026-09-28', 39)],
+    { build: '605', day: '2026-09-28' }, Date.parse('2026-09-30T17:17:00Z'));
+  assert.deepEqual(gapsOf(s), []);
+  assert.deepEqual(s.running.map(r => r.build), ['606']);
+});
+
+test('a failing build is still going too; a failed one is a gap', () => {
+  const at = Date.parse('2026-09-30T17:17:00Z');
+  const latest = { build: '605', day: '2026-09-28' };
+  const failing = a.nightlyStatus([run(606, '2026-09-29', 0, 'failing')], latest, at);
+  assert.deepEqual(gapsOf(failing), []);
+  const failed = a.nightlyStatus([run(606, '2026-09-29', 0, 'failed')], latest, at);
+  assert.deepEqual(gapsOf(failed), [['2026-09-29', ['606']]]);
+});

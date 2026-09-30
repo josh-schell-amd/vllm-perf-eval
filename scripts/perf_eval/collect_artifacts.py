@@ -477,17 +477,59 @@ def nightly_info(build: dict) -> dict | None:
     }
 
 
+# Job states that will not change again. Anything else, known or not, counts
+# as still going.
+_FINISHED_JOB_STATES = frozenset(
+    {"passed", "failed", "canceled", "expired", "timed_out", "skipped", "broken", "finished"}
+)
+# Buildkite build states for a build still going; "failing" once a job failed.
+ONGOING_BUILD_STATES = ("running", "failing")
+# The workload a job runs, from its command: ./lib/run.sh workloads/<stem>.yaml
+_JOB_WORKLOAD_RE = re.compile(r"workloads/([\w.-]+)\.ya?ml")
+
+
+def _amd_jobs(build: dict) -> list[tuple[str, dict]]:
+    """(workload, job) for each job in the build that runs an AMD workload."""
+    out = []
+    for job in build.get("jobs") or []:
+        match = _JOB_WORKLOAD_RE.search(str(job.get("command") or ""))
+        if match and is_amd_workload(workload=match.group(1)):
+            out.append((match.group(1), job))
+    return out
+
+
+def amd_pending(build: dict) -> list[str]:
+    """The AMD workloads a build is still running or waiting to run."""
+    return sorted(w for w, job in _amd_jobs(build) if job.get("state") not in _FINISHED_JOB_STATES)
+
+
+def amd_finished_at(build: dict) -> str | None:
+    """For a build still going, when its last AMD job finished, or None while
+    any AMD job is unfinished or none exists yet.
+
+    NVIDIA jobs can run for hours after the AMD ones; AMD results are final
+    once their jobs are, so they need not wait.
+    """
+    amd = _amd_jobs(build)
+    if not amd or amd_pending(build):
+        return None
+    return max(str(job.get("finished_at") or "") for _, job in amd) or None
+
+
 def nightly_run(build: dict, night: dict) -> dict:
-    """A record that a nightly build ran, whatever it produced."""
+    """A record that a nightly build ran, whatever it produced. A build still
+    going is dated by when it started, so it is kept and shown as running."""
+    ongoing = build.get("state") in ONGOING_BUILD_STATES
     return {
         "event": NIGHTLY_RUN_EVENT,
         "received_at": utcnow_iso(),
         "build_number": build.get("number"),
         "nightly_date": night["nightly_date"],
-        "date": build.get("finished_at") or "",
+        "date": (build.get("created_at") if ongoing else build.get("finished_at")) or "",
         "state": build.get("state") or "",
         "build_url": build.get("web_url") or "",
         "vllm_commit": night["vllm_commit"],
+        "amd_pending": amd_pending(build) if ongoing else [],
     }
 
 
@@ -1049,24 +1091,41 @@ def collect(
         return recipes_at[commit]
 
     cutoff = (datetime.now(UTC) - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    builds_path = f"/organizations/{BUILDKITE_ORG}/pipelines/{BUILDKITE_PIPELINE_SLUG}/builds"
     builds = _bk_paginate(
-        f"/organizations/{BUILDKITE_ORG}/pipelines/{BUILDKITE_PIPELINE_SLUG}/builds",
+        builds_path,
         bk_token,
         # By finish time, as the store keeps results: a nightly created before
         # the cutoff but finished after it is still in the store.
         {"branch": "main", "state": "finished", "finished_from": cutoff},
         budget=budget,
     )
+    ongoing = _bk_paginate(
+        builds_path,
+        bk_token,
+        {"branch": "main", "state[]": list(ONGOING_BUILD_STATES)},
+        budget=budget,
+    )
+    ongoing_nightlies = [(b, info) for b in ongoing if (info := nightly_info(b)) is not None]
 
-    # Newest first, so the re-check window is the newest builds.
+    # Newest first, so the re-check window is the newest builds. A build
+    # still going is read once its AMD jobs are done, dated by the last one.
+    ready = [
+        ({**build, "finished_at": done}, info)
+        for build, info in ongoing_nightlies
+        if (done := amd_finished_at(build)) is not None
+    ]
     nightlies = [(build, info) for build in builds if (info := nightly_info(build)) is not None]
-    nightlies.sort(key=lambda pair: pair[0].get("number") or 0, reverse=True)
     log.info(
-        "Examining %d finished builds since %s: %d nightlies",
+        "Examining %d finished builds since %s (%d nightlies), and %d of %d still-running "
+        "nightlies whose AMD jobs are done",
         len(builds),
         cutoff,
         len(nightlies),
+        len(ready),
+        len(ongoing_nightlies),
     )
+    nightlies = sorted(nightlies + ready, key=lambda pair: pair[0].get("number") or 0, reverse=True)
 
     appended = 0
     markers_appended = 0
@@ -1076,14 +1135,28 @@ def collect(
 
     # Every nightly, results or not, so the page can say when the newest one
     # failed or produced no AMD results. Recorded again only when it changes.
-    recorded_runs = {
-        str(e.get("build_number")): e.get("state")
-        for e in existing
-        if e.get("event") == NIGHTLY_RUN_EVENT
-    }
-    for build, night in nightlies:
-        if recorded_runs.get(str(build.get("number"))) != (build.get("state") or ""):
-            pending_events.append(nightly_run(build, night))
+    # A running one, even with AMD jobs left, so the page says "running"
+    # rather than that no nightly ran.
+    def run_status(run: dict) -> tuple:
+        return (run.get("state") or "", tuple(run.get("amd_pending") or ()))
+
+    recorded_runs: dict[str, dict] = {}
+    for e in existing:
+        if e.get("event") == NIGHTLY_RUN_EVENT:
+            key = str(e.get("build_number"))
+            if key not in recorded_runs or (e.get("received_at") or "") >= (
+                recorded_runs[key].get("received_at") or ""
+            ):
+                recorded_runs[key] = e
+    seen_runs = {str(b.get("number")) for b, _ in nightlies}
+    runs = nightlies + [
+        (b, n) for b, n in ongoing_nightlies if str(b.get("number")) not in seen_runs
+    ]
+    for build, night in runs:
+        run = nightly_run(build, night)
+        recorded = recorded_runs.get(str(build.get("number")))
+        if recorded is None or run_status(recorded) != run_status(run):
+            pending_events.append(run)
 
     for position, (build, night) in enumerate(nightlies):
         number = build.get("number")

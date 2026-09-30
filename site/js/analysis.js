@@ -214,19 +214,26 @@ function runDay(run) { return run.nightly_date || String(run.date || '').slice(0
 // nightly that produced none. Each gap lists that day's nightly builds; an
 // empty list means no nightly ran, when runs (payload nightly_runs) are
 // recorded at all (known), or an unknown cause when they are not. Newest first.
+// Buildkite states of a build still going ("failing" once a job has failed).
+const ONGOING_STATES = new Set(['running', 'failing']);
+
 function nightlyStatus(runs, latest, collectedAt) {
   const known = runs.length > 0;
-  if (!latest) return { known: known, gaps: [] };
+  if (!latest) return { known: known, gaps: [], running: [] };
   // A later build on the latest day is a rebuild of that nightly, which
   // already has results.
-  const empty = runs.filter(r => !r.amd_results && runDay(r) > latest.day);
+  const later = runs.filter(r => !r.amd_results && runDay(r) > latest.day);
+  // Still going is not a gap: its AMD results come once its AMD jobs finish.
+  const running = later.filter(r => ONGOING_STATES.has(r.state));
+  const empty = later.filter(r => !ONGOING_STATES.has(r.state));
   const days = new Set(empty.map(runDay));
   for (let x = dayX(latest.day) + DAY_MS; x <= dayX(fmtDate(collectedAt - NIGHTLY_DUE_MS)); x += DAY_MS) {
     days.add(fmtDate(x));
   }
+  running.forEach(r => days.delete(runDay(r)));
   const gaps = [...days].sort().reverse()
     .map(day => ({ day: day, runs: empty.filter(r => runDay(r) === day) }));
-  return { known: known, gaps: gaps };
+  return { known: known, gaps: gaps, running: running };
 }
 
 // One row per nightly of each config, with its values on metricKeys.

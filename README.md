@@ -32,7 +32,7 @@ what counts as a regression, and why: [regression detection](docs/regression-det
 ## How it works
 
 One page (`site/`: HTML, CSS, plain JS, vendored Chart.js — no framework, no
-build step) fetches one payload once a day, collected from Buildkite by a
+build step) fetches one payload, collected hourly from Buildkite by a
 GitHub Actions workflow. The payload holds real results, so it lives behind
 a sign-in: this repository is public and holds no data.
 

@@ -2,7 +2,7 @@
 
 How to set up a new copy of this dashboard on GitHub: the secrets, the
 private store, Pages, and push protection. For whoever owns the repository.
-Once set up, runs are daily and automatic; see
+Once set up, runs are hourly (US Central working hours) and automatic; see
 [data-pipeline.md](data-pipeline.md) for what each run does, and
 [AGENTS.md](../AGENTS.md) for how to start one by hand.
 

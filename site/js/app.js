@@ -635,7 +635,16 @@ function gapText(gap, known, links) {
   return known ? 'no nightly ran' : 'no AMD results';
 }
 
-// Collection runs daily; older than this, it has missed a run.
+// A nightly still going, and what AMD work it has left. Not a problem:
+// its results are collected once its AMD jobs finish.
+function runningText(run) {
+  const left = run.amd_pending || [];
+  return '#' + esc(run.build) + ' still running'
+    + (left.length ? ', waiting on ' + left.map(esc).join(', ')
+      : ': AMD jobs done, collected on the next run');
+}
+
+// Collection runs hourly by day; older than this, it has missed a day.
 const COLLECTOR_STALE_MS = 36 * 3600000;
 
 // Unfiltered: an empty filter combination is not a stalled nightly.
@@ -816,7 +825,9 @@ function renderKpis() {
           + gapText(gap, status.known, false).replace('ran, but no AMD workload produced results', 'ran, no AMD results')
             .replace(/ \(build [^)]*\)/, '') + '</span>').join('')
         + (status.gaps.length > shown.length
-          ? '<br><span class="warnc">and ' + (status.gaps.length - shown.length) + ' more</span>' : ''),
+          ? '<br><span class="warnc">and ' + (status.gaps.length - shown.length) + ' more</span>' : '')
+        + status.running.map(run => '<br><span class="neutral">' + esc(runDay(run).slice(5)) + ': '
+          + runningText(run) + '</span>').join(''),
     });
   }
 

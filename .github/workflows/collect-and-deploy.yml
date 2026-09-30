@@ -9,9 +9,11 @@ name: Collect and Deploy
 #   main                                  source only
 on:
   schedule:
-    # Once a day, around noon US Central, after the nightly (recent ones
-    # finished 10:30-13:00 UTC; its schedule lives in the Buildkite UI).
-    - cron: '17 17 * * *'
+    # Hourly through the US Central working day, 9am-3pm in both CDT and CST
+    # (cron is UTC and ignores daylight saving, so 14-21 UTC covers both),
+    # to pick up a nightly as soon as its AMD jobs are done. A run with
+    # nothing new costs a few listings and does not redeploy.
+    - cron: '17 14-21 * * *'
   # A change to the page, or to how the payload is built, redeploys from the
   # stored data; only the schedule and a manual run collect from Buildkite.
   push:

@@ -18,6 +18,8 @@ from perf_eval import store as store_mod
 
 # One filtered artifact listing per result path filter, per build.
 LISTINGS_PER_BUILD = len(ca._RESULT_ARTIFACT_PATHS)
+# Two builds listings a run: finished builds, and ones still going.
+BUILD_LISTINGS = 2
 
 # The recipe's runs, one per artifact FakeBuildkite serves (bench-cfg<i>.json).
 CONFIGS = {f"cfg{i}": {"isl": 1024, "osl": 1024, "conc": 2**i} for i in range(8)}
@@ -51,6 +53,7 @@ class FakeBuildkite:
         self.builds = builds
         self.artifacts_per_build = artifacts_per_build
         self.build_list_calls = 0
+        self.build_list_params = []
         self.artifact_list_calls = []
         self.downloads = []
         self.env_reads = []
@@ -59,10 +62,14 @@ class FakeBuildkite:
         params = params or {}
         if path.endswith("/builds"):
             self.build_list_calls += 1
-            self.build_list_params = params
+            self.build_list_params.append(params)
             if budget:
                 budget.charge("listing")
-            return self.builds
+            # Buildkite's "finished" filter is every state a build ends in.
+            if params.get("state") == "finished":
+                ended = {"finished", "passed", "failed", "blocked", "canceled"}
+                return [b for b in self.builds if b["state"] in ended]
+            return [b for b in self.builds if b["state"] in params["state[]"]]
         # Artifact listing, one call per path filter.
         self.artifact_list_calls.append((path, params.get("path")))
         if budget:
@@ -137,19 +144,20 @@ class TestRequestAccounting:
         ca.collect(tmp_path / "events.jsonl", days=14, bk_token="t", gh_token="", budget=budget)
         # 1 builds listing + one artifact listing per path filter per nightly,
         # + one env read per job that produced a result (one job per build here).
-        assert budget.listings == 1 + (LISTINGS_PER_BUILD + 1) * len(builds)
+        assert budget.listings == BUILD_LISTINGS + (LISTINGS_PER_BUILD + 1) * len(builds)
         assert len(bk.env_reads) == len(builds)
         # One download per discovered artifact, first time through.
         assert budget.downloads == len(builds) * 2
-        assert bk.build_list_calls == 1
+        assert bk.build_list_calls == BUILD_LISTINGS
 
     def test_builds_are_listed_by_when_they_finished(self, fake, tmp_path):
         # As the store keeps results: a nightly created before the cutoff but
         # finished after it is still stored, so a rebuild must list it.
         bk = fake([nightly_build(1000)])
         ca.collect(tmp_path / "events.jsonl", days=14, bk_token="t", gh_token="")
-        assert "finished_from" in bk.build_list_params
-        assert "created_from" not in bk.build_list_params
+        finished = bk.build_list_params[0]
+        assert "finished_from" in finished
+        assert "created_from" not in finished
 
     def test_second_run_skips_already_ingested_builds(self, fake, tmp_path):
         builds = [nightly_build(1000 + i) for i in range(8)]
@@ -164,7 +172,7 @@ class TestRequestAccounting:
 
         # Steady state re-lists only the re-check window, not all eight.
         assert second.skipped_builds == 8 - ca.DEFAULT_RECHECK_BUILDS
-        assert second.listings == 1 + LISTINGS_PER_BUILD * ca.DEFAULT_RECHECK_BUILDS
+        assert second.listings == BUILD_LISTINGS + LISTINGS_PER_BUILD * ca.DEFAULT_RECHECK_BUILDS
         # And downloads nothing, because every artifact is already known.
         assert second.downloads == 0
         assert second.total < first.total
@@ -192,7 +200,7 @@ class TestRequestAccounting:
         budget = ca.RequestBudget()
         ca.collect(store, days=14, bk_token="t", gh_token="", recheck_builds=0, budget=budget)
         assert budget.skipped_builds == 4
-        assert budget.listings == 1  # only the builds listing
+        assert budget.listings == BUILD_LISTINGS  # only the builds listings
 
 
 class TestDryRun:
@@ -218,7 +226,7 @@ class TestDryRun:
             dry_run=True,
             budget=budget,
         )
-        assert budget.listings == 1 + LISTINGS_PER_BUILD * 4
+        assert budget.listings == BUILD_LISTINGS + LISTINGS_PER_BUILD * 4
 
 
 class TestCeiling:
@@ -738,7 +746,7 @@ class TestRebuild:
             dry_run=True,
             budget=budget,
         )
-        assert budget.listings == 1 + LISTINGS_PER_BUILD * len(builds)
+        assert budget.listings == BUILD_LISTINGS + LISTINGS_PER_BUILD * len(builds)
         assert store.read_bytes() == before
 
 
@@ -773,3 +781,93 @@ class TestNightlyRunsAreRecorded:
         fake([{**build, "state": "passed"}], artifacts_per_build=0)
         ca.collect(store, days=14, bk_token="t", gh_token="")
         assert [r["state"] for r in self._runs(store)] == ["passed"]
+
+
+def job(workload: str, state: str, finished_at: str = "") -> dict:
+    return {
+        "type": "script",
+        "command": f"./lib/run.sh workloads/{workload}.yaml",
+        "state": state,
+        "finished_at": finished_at,
+    }
+
+
+class TestAStillRunningNightly:
+    """AMD results are final once their jobs are; an H200 job still running
+    must not hold them back, nor make the page think no nightly ran."""
+
+    AMD_DONE = "2026-09-29T09:40:00Z"
+
+    def running(self, number, jobs, state="running"):
+        return {**nightly_build(number), "state": state, "finished_at": None, "jobs": jobs}
+
+    def test_amd_pending_names_only_unfinished_amd_workloads(self):
+        build = self.running(
+            1000,
+            [
+                job("kimi_k2_5_mi300x", "running"),
+                job("glm_5_2_mi355x", "passed", self.AMD_DONE),
+                job("glm_5_3_h200", "running"),
+            ],
+        )
+        assert ca.amd_pending(build) == ["kimi_k2_5_mi300x"]
+        assert ca.amd_finished_at(build) is None
+
+    def test_with_its_amd_jobs_done_it_is_dated_by_the_last(self):
+        build = self.running(
+            1000,
+            [
+                job("glm_5_2_mi355x", "passed", "2026-09-29T08:00:00Z"),
+                job("kimi_k2_5_mi300x", "failed", self.AMD_DONE),
+                job("glm_5_3_h200", "running"),
+            ],
+        )
+        assert ca.amd_finished_at(build) == self.AMD_DONE
+
+    def test_before_its_amd_jobs_exist_it_is_not_ready(self):
+        # The step generator has not created them yet.
+        assert ca.amd_finished_at(self.running(1000, [job("glm_5_3_h200", "running")])) is None
+
+    def test_it_is_collected_once_only_nvidia_is_left(self, fake, tmp_path):
+        store = tmp_path / "events.jsonl"
+        build = self.running(
+            1000,
+            [job("test_8b_mi355x", "passed", self.AMD_DONE), job("glm_5_3_h200", "running")],
+            state="failing",
+        )
+        fake([build], artifacts_per_build=2)
+        ca.collect(store, days=14, bk_token="t", gh_token="")
+        results = [e for e in store_mod.read_events_strict(store) if e["event"] == "perf_result"]
+        assert len(results) == 2
+        assert {e["date"] for e in results} == {self.AMD_DONE}
+
+    def test_with_amd_left_it_is_recorded_as_running_not_missing(self, fake, tmp_path):
+        store = tmp_path / "events.jsonl"
+        build = self.running(1000, [job("kimi_k2_5_mi300x", "running")])
+        fake([build], artifacts_per_build=2)
+        ca.collect(store, days=14, bk_token="t", gh_token="")
+        events = store_mod.read_events_strict(store)
+        assert not [e for e in events if e["event"] == "perf_result"]
+        (run,) = [e for e in events if e["event"] == store_mod.NIGHTLY_RUN_EVENT]
+        assert run["state"] == "running"
+        assert run["amd_pending"] == ["kimi_k2_5_mi300x"]
+        # Dated by its start, so compaction keeps it.
+        assert run["date"] == build["created_at"]
+
+    def test_a_change_in_what_is_left_is_recorded(self, fake, tmp_path):
+        store = tmp_path / "events.jsonl"
+        both = [job("kimi_k2_5_mi300x", "running"), job("minimax_m2_5_mi300x", "running")]
+        fake([self.running(1000, both)], artifacts_per_build=0)
+        ca.collect(store, days=14, bk_token="t", gh_token="")
+        one = [
+            job("kimi_k2_5_mi300x", "running"),
+            job("minimax_m2_5_mi300x", "passed", self.AMD_DONE),
+        ]
+        fake([self.running(1000, one)], artifacts_per_build=0)
+        ca.collect(store, days=14, bk_token="t", gh_token="")
+        runs = [
+            e
+            for e in store_mod.read_events_strict(store)
+            if e["event"] == store_mod.NIGHTLY_RUN_EVENT
+        ]
+        assert [r["amd_pending"] for r in runs] == [["kimi_k2_5_mi300x"]]

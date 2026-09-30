@@ -1,7 +1,7 @@
 # Agent instructions for perf-eval-dashboard
 
 A static dashboard of AMD nightly results from the `vllm/perf-eval` Buildkite
-pipeline. A daily GitHub Actions run downloads the nightly's result artifacts,
+pipeline. An hourly GitHub Actions run (US Central working hours) downloads the nightly's result artifacts,
 keeps 30 days of them in an event store, aggregates that into one JSON
 payload, and deploys the page with it, encrypted, to GitHub Pages. There is
 no server: the page asks for the shared login and decrypts its own payload.
@@ -117,7 +117,7 @@ on the code is not approval to run a workflow.
 
 | Workflow | Runs on | Writes |
 |---|---|---|
-| `collect-and-deploy.yml` (Collect and Deploy) | daily 17:17 UTC; pushes to `main` touching the page, the payload build, or itself; manual | from `main`: the store (private repo, `dashboard-state`) and the site (Pages); from another branch: nothing |
+| `collect-and-deploy.yml` (Collect and Deploy) | hourly at :17, 14:00-21:00 UTC; pushes to `main` touching the page, the payload build, or itself; manual | from `main`: the store (private repo, `dashboard-state`) and the site (Pages); from another branch: nothing |
 | `lint-and-test.yml` (Lint and Test) | pushes to `main`, pull requests, manual | nothing |
 | `secrets-scan.yml` (Secrets Scan) | every push and pull request, manual | nothing |
 

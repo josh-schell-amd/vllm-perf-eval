@@ -345,6 +345,8 @@ def _nightly_runs(events: list[dict]) -> list[dict]:
             "state": run.get("state") or "",
             "build_url": run.get("build_url") or "",
             "amd_results": results.get(key, 0),
+            # AMD workloads a nightly still going has left to run.
+            "amd_pending": run.get("amd_pending") or [],
         }
         for key, run in runs.items()
     ]

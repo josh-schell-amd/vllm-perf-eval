@@ -48,11 +48,17 @@ after sign-in ([deploying.md](deploying.md#the-login)).
 
 ## Collection schedule
 
-- `collect-and-deploy.yml` collects once a day at **17:17 UTC** (about noon
-  US Central), and on manual dispatch.
-- Recent nightlies have mostly finished between about 10:30 and 13:00 UTC.
-  One that finishes later is picked up the next day, or straight away with a
-  manual run.
+- `collect-and-deploy.yml` collects **hourly at :17, 14:00-21:00 UTC**:
+  9am-3pm US Central in both daylight and standard time (cron is UTC and
+  ignores daylight saving). Also on manual dispatch.
+- **A nightly is collected once its AMD jobs are done**, even while NVIDIA
+  jobs keep the build running for hours. A build still going is listed
+  separately (`running`, or `failing` once a job has failed), and read only
+  when every job running an AMD workload has finished; its results are dated
+  by the last of those.
+- **A nightly still running is shown as running, not missing.** It is
+  recorded with the AMD workloads it has left (`amd_pending`), and the page
+  says what it is waiting on instead of reporting that no nightly ran.
 - There is no build-finished trigger, since that would need a hosted webhook
   endpoint.
 - A push that touches `site/`, `scripts/build_site.py`, the modules the
@@ -250,7 +256,7 @@ section in the same commit.
   // page can say when the newest one failed or ran no AMD workload.
   "nightly_runs": [
     { "build": "603", "nightly_date": "2026-09-26", "date": "...", "state": "failed",
-      "build_url": "...", "amd_results": 0 }
+      "build_url": "...", "amd_results": 0, "amd_pending": [] }
   ],
   "models": [{
     "model": "org/Model",

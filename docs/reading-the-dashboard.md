@@ -11,7 +11,7 @@ nightly* follows the filters.
 
 | Card | Shows |
 |---|---|
-| Latest nightly with AMD results | Its Buildkite date, vLLM commit, and a link to the build. Orange, with one line per later day (up to three), when later nightlies left no AMD results: `09-26: #602 ran, no AMD results`, or `no nightly ran` |
+| Latest nightly with AMD results | Its Buildkite date, vLLM commit, and a link to the build. Orange, with one line per later day (up to three), when later nightlies left no AMD results: `09-26: #602 ran, no AMD results`, or `no nightly ran`. A nightly still running adds a grey line instead, not a warning: `09-29: #606 still running, waiting on kimi_k2_5_mi300x` |
 | Performance overnight | Median Output Throughput change vs the previous nightly. Green for any gain, red for a drop of at least 0.5% |
 | Regressions overnight | Configs with at least one metric 0.5% or more worse. Green at zero, when something was compared |
 | Improvements overnight | Configs with at least one metric 0.5% or more better. A config can be in both |
@@ -52,6 +52,7 @@ newest nightly, a notice at the top says why, one line per nightly since:
 | `#603 passed, but no AMD workload produced results` | The build ran; none of its AMD workloads left results |
 | `#603 was canceled` | Someone canceled the build |
 | `no nightly ran` | Buildkite has no nightly build named for that day |
+| `#606 still running, waiting on …` | The build is still going and those AMD workloads have not finished; its results are collected on the first hourly run after they do. NVIDIA jobs still running do not hold it back |
 | `the Collect and Deploy workflow may not be running` | The data was last collected more than 36 hours ago |
 
 A nightly named for day D usually finishes by 14:00 UTC on D+1, so a day
