@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Fold the event store into the published ``perf_eval.json``.
+"""Fold an event log into the published ``perf_eval.json``.
 
 Scope: AMD only, nightly only, re-applied here instead of trusted from ingest
-so a stray event cannot widen what the page shows. Reads only the local store.
+so a stray event cannot widen what the page shows. Reads the JSONL file
+`databricks_collect.py` wrote for this run; it is not a persisted store.
 """
 
 from __future__ import annotations
@@ -22,6 +23,16 @@ from perf_eval import (  # noqa: E402
     PIPELINE_URL,
     WINDOW_DAYS,
 )
+from perf_eval.events import (  # noqa: E402
+    EXPECTED_CONFIGS_EVENT,
+    NIGHTLY_RUN_EVENT,
+    RESULT_EVENTS,
+    finished_at,
+    nightly_identity,
+    read_events_strict,
+    received_at,
+    write_json_atomic,
+)
 from perf_eval.normalize import (  # noqa: E402
     ACCURACY_BETTER,
     DERIVED_METRICS,
@@ -33,16 +44,6 @@ from perf_eval.normalize import (  # noqa: E402
     parallelism_of,
     score_rows,
     to_int,
-)
-from perf_eval.store import (  # noqa: E402
-    EXPECTED_CONFIGS_EVENT,
-    NIGHTLY_RUN_EVENT,
-    RESULT_EVENTS,
-    finished_at,
-    nightly_identity,
-    read_events_strict,
-    received_at,
-    write_json_atomic,
 )
 
 logging.basicConfig(

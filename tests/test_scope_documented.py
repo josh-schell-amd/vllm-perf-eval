@@ -48,14 +48,14 @@ class TestReadme:
 
 
 class TestModuleDocstrings:
-    @pytest.mark.parametrize("module", ["collect_artifacts.py", "aggregate.py", "normalize.py"])
+    @pytest.mark.parametrize("module", ["databricks_collect.py", "aggregate.py", "normalize.py"])
     def test_docstring_declares_the_scope(self, module):
         source = read(SCRIPTS / module)
         docstring = source.split('"""')[1].lower()
         assert "scope" in docstring, module
         assert "amd" in docstring, module
 
-    @pytest.mark.parametrize("module", ["collect_artifacts.py", "aggregate.py"])
+    @pytest.mark.parametrize("module", ["databricks_collect.py", "aggregate.py"])
     def test_docstring_declares_nightly_only(self, module):
         docstring = read(SCRIPTS / module).split('"""')[1].lower()
         assert "nightly" in docstring, module
@@ -70,8 +70,8 @@ class TestNamedPredicates:
         assert callable(__import__("perf_eval.normalize", fromlist=["x"]).is_amd_workload)
 
     def test_the_nightly_filter_is_a_named_predicate(self):
-        module = __import__("perf_eval.collect_artifacts", fromlist=["x"])
-        assert callable(module.is_nightly_build)
+        module = __import__("perf_eval.databricks_collect", fromlist=["x"])
+        assert callable(module.is_nightly_row)
 
     def test_the_aggregator_reapplies_the_scope_through_one_predicate(self):
         module = __import__("perf_eval.aggregate", fromlist=["x"])

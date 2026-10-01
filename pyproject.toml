@@ -14,6 +14,9 @@ dependencies = [
     "truststore>=0.9",
     # AES-GCM for sealing the published payload (scripts/perf_eval/seal.py).
     "cryptography>=44",
+    # Queries vllm_perf_data_ingest / vllm_eval_data_ingest directly; see
+    # scripts/perf_eval/databricks_collect.py.
+    "databricks-sql-connector>=4.0",
 ]
 
 # Exact versions of everything, dependencies of dependencies included, live in

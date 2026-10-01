@@ -187,10 +187,10 @@ test('an up-to-date dashboard has no gaps', () => {
   assert.deepEqual(a.nightlyStatus(runs, { build: '605', day: '2026-09-27' }, collectedAt).gaps, []);
 });
 
-test('with no runs recorded, gaps are still reported, their cause unknown', () => {
+test('with no runs recorded, no gaps are guessed: there is no signal to guess from', () => {
   const s = a.nightlyStatus([], latest601, collectedAt);
   assert.equal(s.known, false);
-  assert.deepEqual(gapsOf(s), [['2026-09-27', []], ['2026-09-26', []]]);
+  assert.deepEqual(gapsOf(s), []);
 });
 
 test('a newer empty build on the latest day is a rebuild, not a gap', () => {

@@ -1,4 +1,4 @@
-"""Guards keeping the Buildkite token scoped and out of the repository.
+"""Guards keeping the Databricks token scoped and out of the repository.
 
 The token is a repo secret injected as step-scoped env on the single step that
 needs it. These tests fail if a change would widen where it can be used or let
@@ -20,12 +20,22 @@ ROOT = Path(perf_eval.__file__).resolve().parents[2]
 SCRIPTS = ROOT / "scripts"
 WORKFLOWS = ROOT / ".github" / "workflows"
 
-TOKEN_NAMES = ("BUILDKITE_TOKEN", "BUILDKITE_API_TOKEN")
-# The only modules permitted to read the Buildkite token. Adding one widens
+TOKEN_NAMES = ("DATABRICKS_TOKEN", "DATABRICKS_HOST", "DATABRICKS_WAREHOUSE_ID")
+# The only module permitted to read the Databricks token. Adding one widens
 # where a credential can reach, so it should be a deliberate decision.
-TOKEN_ENTRYPOINTS = {"perf_eval/collect_artifacts.py"}
+TOKEN_ENTRYPOINTS = {"perf_eval/databricks_collect.py"}
 # Read-only by construction: these must never issue a write.
-READ_ONLY_MODULES = ("perf_eval/collect_artifacts.py",)
+READ_ONLY_MODULES = ("perf_eval/databricks_collect.py",)
+# SQL verbs that would need a write-scoped warehouse grant, not a query one.
+_WRITE_VERBS = (
+    "INSERT INTO",
+    "UPDATE ",
+    "DELETE FROM",
+    "MERGE INTO",
+    "DROP ",
+    "ALTER ",
+    "TRUNCATE",
+)
 
 
 class TestOrgIsPinned:
@@ -35,36 +45,30 @@ class TestOrgIsPinned:
     def test_pipeline_slug_is_perf_eval(self):
         assert perf_eval.BUILDKITE_PIPELINE_SLUG == "perf-eval"
 
-    def test_every_buildkite_url_interpolates_the_pinned_org(self):
-        # A pinned org is what keeps the token from being pointed at an
-        # unrelated Buildkite organization.
-        pattern = re.compile(r"organizations/\{(\w+)\}")
-        for path in SCRIPTS.rglob("*.py"):
-            for name in pattern.findall(path.read_text(encoding="utf-8")):
-                assert name == "BUILDKITE_ORG", f"{path}: org comes from {name}"
-
 
 class TestTokenReach:
-    def test_only_the_artifact_collector_reads_the_token(self):
+    def test_only_the_collector_reads_the_token(self):
         offenders = set()
         for path in SCRIPTS.rglob("*.py"):
             rel = path.relative_to(SCRIPTS).as_posix()
             source = path.read_text(encoding="utf-8")
-            if any(name in source for name in TOKEN_NAMES) and rel not in TOKEN_ENTRYPOINTS:
+            if "DATABRICKS_TOKEN" in source and rel not in TOKEN_ENTRYPOINTS:
                 offenders.add(rel)
-        assert offenders == set(), f"unexpected Buildkite token references: {offenders}"
+        assert offenders == set(), f"unexpected Databricks token references: {offenders}"
 
     @pytest.mark.parametrize("module", READ_ONLY_MODULES)
     def test_token_holders_only_issue_reads(self, module):
-        source = (SCRIPTS / module).read_text(encoding="utf-8")
-        for verb in ("requests.post", "requests.put", "requests.patch", "requests.delete"):
-            assert verb not in source, f"{module}: {verb} would need a write-scoped token"
+        source = (SCRIPTS / module).read_text(encoding="utf-8").upper()
+        for verb in _WRITE_VERBS:
+            assert verb not in source, (
+                f"{module}: {verb.strip()} would need a write-scoped warehouse grant"
+            )
 
     @pytest.mark.parametrize("module", READ_ONLY_MODULES)
     def test_token_holders_fail_closed_without_a_token(self, module):
         source = (SCRIPTS / module).read_text(encoding="utf-8")
-        assert 'os.getenv("BUILDKITE_TOKEN")' in source, module
-        assert "BUILDKITE_TOKEN not set" in source, module
+        assert "DATABRICKS_TOKEN" in source, module
+        assert "not set" in source, module
 
     @pytest.mark.parametrize("module", READ_ONLY_MODULES)
     def test_token_holders_never_disable_tls_verification(self, module):
@@ -91,11 +95,12 @@ class TestTokenReach:
         source = (SCRIPTS / module).read_text(encoding="utf-8")
         assert "use_system_certificates()" in source, module
 
-    @pytest.mark.parametrize("module", ["aggregate.py", "merge_events.py", "normalize.py"])
+    @pytest.mark.parametrize("module", ["aggregate.py", "normalize.py", "events.py"])
     def test_offline_modules_cannot_reach_the_network(self, module):
         source = (SCRIPTS / "perf_eval" / module).read_text(encoding="utf-8")
         assert not re.search(r"^\s*(?:import requests|from requests)", source, re.M), module
         assert not re.search(r"^\s*(?:import urllib|from urllib)", source, re.M), module
+        assert not re.search(r"^\s*(?:import databricks|from databricks)", source, re.M), module
         assert "api.buildkite.com" not in source, module
 
 
@@ -118,9 +123,9 @@ class TestWorkflowTokenHandling:
         text = self._workflow_text("collect-and-deploy.yml")
         # Exactly one step may receive it, and nothing above `steps:` may,
         # since a workflow- or job-level env block reaches every step.
-        assert text.count("BUILDKITE_TOKEN: ${{ secrets.BUILDKITE_TOKEN }}") == 1
+        assert text.count("DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}") == 1
         preamble = text.split("steps:")[0]
-        assert "BUILDKITE_TOKEN" not in preamble
+        assert "DATABRICKS_TOKEN" not in preamble
 
     def test_ci_workflow_never_receives_the_token(self):
         for name in ("lint-and-test.yml", "secrets-scan.yml"):
@@ -130,7 +135,7 @@ class TestWorkflowTokenHandling:
 
     def test_no_checkout_persists_credentials(self):
         # A persisted token sits in .git/config where every later step can
-        # read it; the one step that pushes supplies it for that push only.
+        # read it; nothing in this workflow needs that.
         for path in WORKFLOWS.glob("*.yml"):
             for job in yaml.safe_load(path.read_text(encoding="utf-8"))["jobs"].values():
                 for step in job.get("steps", []):
@@ -148,35 +153,28 @@ class TestWorkflowTokenHandling:
         holders = [s["name"] for s in steps if "DASHBOARD_PASSWORD" in (s.get("env") or {})]
         assert holders == ["Fetch the published payload", "Build the site"]
 
-    def test_the_store_token_reaches_only_the_store(self):
-        workflow = yaml.safe_load(self._workflow_text("collect-and-deploy.yml"))
-        steps = workflow["jobs"]["collect"]["steps"]
-        holders = [s["name"] for s in steps if "STATE_REPO_TOKEN" in str(s)]
-        assert holders == ["Check out the event store", "Persist the event store"]
-
-    def test_ci_never_receives_the_login_or_the_store_token(self):
+    def test_ci_never_receives_the_login(self):
         # CI builds with a throwaway login of its own, never the real one.
         for name in ("lint-and-test.yml", "secrets-scan.yml"):
             text = self._workflow_text(name)
-            for secret in ("DASHBOARD_PASSWORD", "DASHBOARD_USERNAME", "STATE_REPO_TOKEN"):
+            for secret in ("DASHBOARD_PASSWORD", "DASHBOARD_USERNAME"):
                 assert f"secrets.{secret}" not in text, f"{name} must not receive {secret}"
 
-    def test_only_the_persist_step_pushes_with_the_token(self):
-        workflow = yaml.safe_load(self._workflow_text("collect-and-deploy.yml"))
-        steps = workflow["jobs"]["collect"]["steps"]
-        pushers = [step["name"] for step in steps if "extraheader" in step.get("run", "")]
-        assert pushers == ["Persist the event store"]
+    def test_no_step_pushes_with_an_inline_token(self):
+        # There is no store to push to anymore; nothing in this workflow
+        # should ever need to smuggle a token into a git push header.
+        for path in WORKFLOWS.glob("*.yml"):
+            assert "extraheader" not in path.read_text(encoding="utf-8"), path.name
 
 
 @pytest.mark.skipif(not WORKFLOWS.is_dir(), reason="workflows not present")
-def test_only_main_saves_the_store_or_deploys():
-    # A manual run can pick any branch; unmerged code must not write the
-    # shared store or the live site.
+def test_only_main_deploys():
+    # A manual run can pick any branch; unmerged code must not deploy the
+    # live site.
     text = (WORKFLOWS / "collect-and-deploy.yml").read_text(encoding="utf-8")
     jobs = yaml.safe_load(text)["jobs"]
-    for name in ("Persist the event store", "Upload the site"):
-        (step,) = [s for s in jobs["collect"]["steps"] if s.get("name") == name]
-        assert "github.ref == 'refs/heads/main'" in str(step.get("if")), name
+    (step,) = [s for s in jobs["collect"]["steps"] if s.get("name") == "Upload the site"]
+    assert "github.ref == 'refs/heads/main'" in str(step.get("if"))
     assert "github.ref == 'refs/heads/main'" in str(jobs["deploy"].get("if"))
 
 

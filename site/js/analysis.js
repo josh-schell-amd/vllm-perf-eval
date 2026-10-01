@@ -212,15 +212,17 @@ function runDay(run) { return run.nightly_date || String(run.date || '').slice(0
 // The days after latest, the newest nightly with AMD results ({ build, day }),
 // that have none: each due day up to collectedAt, and any day with a newer
 // nightly that produced none. Each gap lists that day's nightly builds; an
-// empty list means no nightly ran, when runs (payload nightly_runs) are
-// recorded at all (known), or an unknown cause when they are not. Newest first.
+// empty list means no nightly ran. Newest first. Requires payload
+// nightly_runs (known): the collector no longer polls Buildkite's build
+// state, so with none recorded there is no signal to guess a gap from, and
+// none are reported rather than flagging every missing day as a false alarm.
 // Buildkite states of a build still going ("failing" once a job has failed).
 const ONGOING_STATES = new Set(['running', 'failing']);
 function isOngoing(run) { return ONGOING_STATES.has(run.state); }
 
 function nightlyStatus(runs, latest, collectedAt) {
   const known = runs.length > 0;
-  if (!latest) return { known: known, gaps: [], running: [] };
+  if (!latest || !known) return { known: known, gaps: [], running: [] };
   // A later build on the latest day is a rebuild of that nightly, which
   // already has results.
   const later = runs.filter(r => !r.amd_results && runDay(r) > latest.day);

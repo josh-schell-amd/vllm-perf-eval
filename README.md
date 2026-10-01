@@ -32,25 +32,24 @@ what counts as a regression, and why: [regression detection](docs/regression-det
 ## How it works
 
 One page (`site/`: HTML, CSS, plain JS, vendored Chart.js — no framework, no
-build step) fetches one payload, collected hourly from Buildkite by a
+build step) fetches one payload, collected hourly from Databricks by a
 GitHub Actions workflow. The payload holds real results, so it lives behind
 a sign-in: this repository is public and holds no data.
 
 ```
-Buildkite vllm/perf-eval  --(read-only)-->  data/events.jsonl  --aggregate-->  perf_eval.json
-                                            (private repo)                          |
-                                                                              seal with login
-                                                                                     |
-                                                                            GitHub Pages (public)
+Databricks (vllm_perf_data_ingest,       --(read-only query)-->  data/events.jsonl  --aggregate-->  perf_eval.json
+            vllm_eval_data_ingest)                                (this run only)                          |
+                                                                                                      seal with login
+                                                                                                             |
+                                                                                                    GitHub Pages (public)
 ```
 
-Details, including why results and the site code live in separate
-repositories: [data pipeline](docs/data-pipeline.md).
+Databricks already retains full history, so every run queries it fresh
+rather than maintaining a local store. Details: [data pipeline](docs/data-pipeline.md).
 
 ## Deploying your own copy
 
-Two repositories: this one (public, code only) and a **private** one for
-results. Full walkthrough — secrets, the private store, Pages, push
+This repository (public, code only). Full walkthrough — secrets, Pages, push
 protection, the login: **[docs/deploying.md](docs/deploying.md)**.
 
 ## Where to go next

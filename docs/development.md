@@ -17,14 +17,14 @@ site/js/theme.js             applies the saved theme before first paint
 site/vendor/                 Chart.js and the AMD logo, with provenance
 scripts/perf_eval/
   normalize.py               metric registry, AMD filter, event normalizers
-  store.py                   events.jsonl: atomic writes, 30-day retention
-  collect_artifacts.py       Buildkite REST -> canonical events
+  events.py                  event timestamp/identity helpers, JSONL I/O
+  recipes.py                 workload recipes from GitHub: coverage + accuracy model/device
+  databricks_collect.py      Databricks (vllm_perf_data_ingest, vllm_eval_data_ingest) -> canonical events
   aggregate.py               events.jsonl -> perf_eval.json
-  merge_events.py            identity-based merge of two stores
   seal.py                    encrypts the payload with the dashboard login
   secrets_scan.py
 scripts/build_site.py        site/ + sealed perf_eval.json -> _site/
-data/                        generated; the store lives in the private repo, gitignored here
+data/                        generated; nothing here is retained between runs
 tests/
 .github/workflows/           collect-and-deploy.yml, lint-and-test.yml, secrets-scan.yml
 ```
@@ -37,8 +37,8 @@ tests/
 - Both workflows install with `uv sync --locked`, which fails if `uv.lock` is
   stale.
 - The collect workflow adds `--no-dev`, so only the runtime packages
-  (`requests`, `PyYAML`, `truststore`) run next to the Buildkite and write
-  tokens.
+  (`requests`, `PyYAML`, `truststore`, `databricks-sql-connector`) run next to
+  the Databricks token.
 - Actions are pinned to commit SHAs.
 
 ## Local setup
@@ -52,14 +52,16 @@ uv sync                  # creates .venv with exactly what uv.lock pins
 
 ## Run the pipeline against real data
 
-The sequence the workflow runs, minus the branch commits. Read-only against
-Buildkite; ingest only appends what is new to `data/events.jsonl`, so it is
-safe to re-run as often as you like.
+The sequence the workflow runs. Read-only against Databricks; every run
+queries it fresh and rewrites `data/events.jsonl`, so it is safe to re-run as
+often as you like.
 
 ```bash
-export BUILDKITE_TOKEN=bkua_...          # read-only: Read Builds + Read Artifacts
+export DATABRICKS_HOST=...
+export DATABRICKS_WAREHOUSE_ID=...
+export DATABRICKS_TOKEN=...
 
-python scripts/perf_eval/collect_artifacts.py   # the last 30 days, the default
+python scripts/perf_eval/databricks_collect.py   # the last 30 days, the default
 python scripts/perf_eval/aggregate.py
 DASHBOARD_USERNAME=viewer DASHBOARD_PASSWORD=local-test python scripts/build_site.py
 python -m http.server --directory _site 8000
@@ -68,13 +70,13 @@ python -m http.server --directory _site 8000
 Then open <http://localhost:8000> and sign in with the username/password
 above.
 
-- Only ingest (`collect_artifacts.py`) needs the Buildkite token.
-  `aggregate.py` and `build_site.py` read the local store.
+- Only `databricks_collect.py` needs the Databricks credentials.
+  `aggregate.py` and `build_site.py` read the local `events.jsonl` it wrote.
 - The workload recipes come from the public `vllm-project/perf-eval` repo, so
   no GitHub token is needed. If you hit GitHub's anonymous rate limit,
   `export GITHUB_TOKEN="$(gh auth token)"`.
-- Add `--dry-run` to the collector to see what it would download, with no
-  downloads and no writes.
+- Add `--dry-run` to the collector to see row/event counts, with nothing
+  written.
 
 ## Checks
 

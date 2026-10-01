@@ -14,6 +14,7 @@ GITHUB_PAT = "ghp_" + "A" * 36
 BUILDKITE = "bkua_" + "0" * 40
 HUGGINGFACE = "hf_" + "E" * 34
 FINE_GRAINED = "github_pat_" + "D" * 50
+DATABRICKS = "dapi" + "0" * 32
 
 
 class TestDetection:
@@ -28,6 +29,7 @@ class TestDetection:
             (FINE_GRAINED, "GitHub fine-grained PAT"),
             (BUILDKITE, "Buildkite API token"),
             (HUGGINGFACE, "HuggingFace token"),
+            (DATABRICKS, "Databricks PAT"),
         ],
     )
     def test_flags_each_known_shape(self, token, label):
@@ -53,9 +55,12 @@ class TestPlaceholdersAreNotFlagged:
             "placeholder = 'ghp_...'",
             "placeholder = 'bkua_...'",
             "placeholder = 'hf_...'",
+            "placeholder = 'dapi...'",
             'export GITHUB_TOKEN="ghp_..."  # docstring example',
             'export BUILDKITE_TOKEN="bkua_..."',
+            'export DATABRICKS_TOKEN="dapi..."',
             "BUILDKITE_TOKEN: ${{ secrets.BUILDKITE_TOKEN }}",
+            "DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}",
             "gh secret set BUILDKITE_TOKEN",
         ],
     )
@@ -135,7 +140,7 @@ class TestAllowlist:
         [
             "site/index.html",
             "site/vendor/chart.umd.min.js",
-            "scripts/perf_eval/collect_artifacts.py",
+            "scripts/perf_eval/databricks_collect.py",
             "scripts/perf_eval/secrets_scan.py",
             ".github/workflows/collect-and-deploy.yml",
             "README.md",

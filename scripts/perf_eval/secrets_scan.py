@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail if a GitHub, Buildkite or HuggingFace token appears in the repo.
+"""Fail if a GitHub, Databricks, Buildkite or HuggingFace token appears in the repo.
 
     python scripts/perf_eval/secrets_scan.py
 
@@ -46,6 +46,7 @@ TOKEN_SHAPES: tuple[TokenShape, ...] = (
     TokenShape("GitHub fine-grained PAT", "github_pat_", 50, BASE62_UNDERSCORE),
     TokenShape("Buildkite API token", "bkua_", 40, LOWER_HEX),
     TokenShape("HuggingFace token", "hf_", 34, BASE62),
+    TokenShape("Databricks PAT", "dapi", 32, LOWER_HEX),
 )
 
 PATH_ALLOWLIST = ("tests/test_secrets_scan.py",)  # constructs sample tokens to test detection

@@ -7,7 +7,7 @@ venv/
 _site/
 *.egg-info/
 
-# Generated data. The event store and published payload live on the
-# dashboard-state branch, so main stays clean of data commits.
+# Generated data: events.jsonl and perf_eval.json are rebuilt fresh from
+# Databricks every run, never committed.
 data/
 
