@@ -11,7 +11,7 @@ nightly* follows the filters.
 
 | Card | Shows |
 |---|---|
-| Latest nightly with AMD results | Its date and vLLM commit, and a link to the Buildkite build when one is known (accuracy results only; see below). There is no gap or "still running" detail anymore: the collector no longer polls Buildkite's build state, so a nightly that failed before producing any result, or is still in progress, is invisible until it succeeds |
+| Latest nightly with AMD results | Its build, date and vLLM commit, linking to the Buildkite build when one is known (see below). There is no gap or "still running" detail: the collector does not poll Buildkite's build state, so a nightly that failed before producing any result is invisible, and one still in progress shows only what has reported so far |
 | Performance overnight | Median Output Throughput change vs the previous nightly. Green for any gain, red for a drop of at least 0.5% |
 | Regressions overnight | Configs with at least one metric 0.5% or more worse. Green at zero, when something was compared |
 | Improvements overnight | Configs with at least one metric 0.5% or more better. A config can be in both |
@@ -36,10 +36,10 @@ computes latency and throughput from the completed requests only, so such a
 run can look like an improvement when it is not. The regression panel follows
 the header toggles, as the charts do.
 
-A perf point has no external link: `vllm_perf_data_ingest` carries no
-Buildkite identity at all. An accuracy point links to the Buildkite build
-page (not a specific job — there is no per-artifact job id anymore), when
-the underlying row happened to carry one.
+A point links to its Buildkite build page (not a specific job: there is no
+job ID) when the build is known. Perf rows carry no build of their own, so a
+perf point gets the build whose accuracy results ran the same vLLM commit.
+Without one, the build is shown as its day (`#2026-10-01`), with no link.
 
 ## When the data is stale
 
@@ -79,7 +79,8 @@ URL, so **Copy link** reproduces the view.
   (2026-09-29)`, or `vs an older run (2026-09-18)` if the config skipped the
   previous run, or *No previous run*. Changes are counted by run, not by
   night: nightlies can skip days, so the previous run need not be last
-  night's. A "build" is a calendar day now, not a Buildkite build number.
+  night's. The build is the Buildkite build number where known, else the
+  day.
 - Click a bar for its history.
 - The detail table below lists each config's newest values, each with its own
   change against the previous run beneath it, so no metric needs picking
@@ -99,8 +100,8 @@ URL, so **Copy link** reproduces the view.
 - The x-axis labels every day, none skipped, as ATOM does, from that chart's
   own points: a day with a point shows the short vLLM commit it measured
   (`9/25 abc1234`, the date in the text colour, the commit in blue). A day without one reads `9/24 missing` in orange: no
-  nightly ran, or it ran without these configs. A day whose nightly is still
-  going reads `9/29 running` in grey: not missing, just not finished. Days before the chart's first
+  nightly ran, or it ran without these configs (or has not reported them
+  yet: there is no "still running" signal). Days before the chart's first
   point, or whose nightly is not due yet, show the date alone. The history
   chart uses the same axis.
 - The chart window (1–30 days) changes the charts only, never the regression
@@ -133,10 +134,9 @@ URL, so **Copy link** reproduces the view.
   formula is prefixed with `'`.
 ### Missing panel (bottom of the page)
 
-- First, each later nightly that produced no AMD results at all: it ran and
-  none of its AMD workloads reported, or no nightly ran that day.
-- Then configs the recipes expect but the newest build with results didn't
-  report, grouped by workload.
+- Configs the recipes expect but the newest build with results didn't
+  report, grouped by workload. A nightly still in progress counts its
+  unfinished workloads here until they report.
 - It matters because a workload that OOMs just stops reporting: it vanishes
   from the averages instead of showing as a regression.
 
@@ -165,9 +165,10 @@ comparing the two dashboards number for number.
 | Interac., `1000 / TPOT` (tok/s/user) | `mean_intvty`, "Interactivity" | identical |
 | TTFT, TPOT (ms) | `mean_ttft`, `mean_tpot` (stored in s) | identical |
 
-- `transform_perf` divides once at ingest by the GPUs the server uses: vLLM's
-  world size, TP × PP × PCP × DP. Every value here is already per-GPU, which
-  is what makes two devices comparable.
+- perf-eval divides once at ingest, by its `tp`: the recipe's
+  `metadata.tp`, else TP × DP. Every value here is already per-GPU, which is
+  what makes two devices comparable. (A recipe using PP or PCP would be
+  divided by fewer GPUs than it uses; none does yet.)
 - ATOM reports what the harness emitted, and divides by GPU count only in its
   tradeoff charts.
 - The `/GPU` lives in the **unit**, not the label. Axis titles and tooltips

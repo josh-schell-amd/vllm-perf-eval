@@ -18,7 +18,7 @@ site/vendor/                 Chart.js and the AMD logo, with provenance
 scripts/perf_eval/
   normalize.py               metric registry, AMD filter, event normalizers
   events.py                  event timestamp/identity helpers, JSONL I/O
-  recipes.py                 workload recipes from GitHub: coverage + accuracy model/device
+  recipes.py                 workload recipes from GitHub: coverage, perf precision/parallelism, accuracy model/device
   databricks_collect.py      Databricks (vllm_perf_data_ingest, vllm_eval_data_ingest) -> canonical events
   aggregate.py               events.jsonl -> perf_eval.json
   seal.py                    encrypts the payload with the dashboard login

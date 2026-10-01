@@ -14,9 +14,9 @@ vllm_perf_data_ingest        vllm_eval_data_ingest      GitHub vllm-project/perf
             |                            |                            |
             +--------------+-------------+--------------+-------------+
                            |                             |
-                databricks_collect.py            (recipe: expected configs,
-                           |                       and model/device for
-                    data/events.jsonl              accuracy rows)
+                databricks_collect.py            (recipes: expected configs,
+                           |                       perf precision/parallelism,
+                    data/events.jsonl              accuracy model/device)
                      (this run only)
                            |
                      aggregate.py
@@ -34,7 +34,10 @@ repo's ingest scripts write to directly (`lib/ingest_perf.py` for
 here ever touches Buildkite. Each row has two VARIANT columns, `message` (the
 JSON body the ingest script POSTed) and `request_metadata` (HTTP request
 info, including an ingest `timestamp`); every field of interest lives inside
-`message`.
+`message`. Only nightly rows are fetched, and from the eval table only
+`kind = 'results'` rows (one per lm_eval results file), never the
+per-question `samples` rows that make up most of it, and only the fields
+read (`EVAL_FIELDS`).
 
 There is no persisted event store. Databricks already retains full history,
 so every run queries it fresh (filtered to `WINDOW_DAYS`) and rebuilds
@@ -89,8 +92,10 @@ after sign-in ([deploying.md](deploying.md#the-login)).
 |---|---|
 | Databricks cannot be reached, the query fails, or fewer rows arrive than it reported | Fails the run: no payload is built from a partial or absent query |
 | A row is dropped for being out of scope or unusable | Counted by reason in the run log (counts only), so a missing chart can be traced |
-| A row's `message` is not valid JSON, or is missing fields a perf/accuracy event needs | Skipped |
+| A row's `message` is not a JSON object | Skipped |
+| A row is missing fields a perf/accuracy event needs | Skipped, and counted |
 | A perf row with no positive throughput metrics | Skipped, rather than published as zero throughput |
+| A perf row with no matching recipe | Kept, with its own TP and an unstated precision, and counted |
 | `data/events.jsonl` (this run's file) cannot be read by `aggregate.py` | Fails the run |
 | The live payload cannot be fetched or opened with the login | Counts as changed, so the site is deployed |
 | The payload fails `aggregate.py`'s sanity checks | Not written, so nothing malformed is persisted or deployed |
@@ -172,9 +177,10 @@ nightly is missing, split into two, or mislabeled.
   unlabeled.
 - **Accuracy rows do carry real Buildkite identity** (`buildkite_build_number`,
   `buildkite_build_url`, `buildkite_branch`, `buildkite_commit`, `vllm_commit`)
-  because `lib/ingest.py` stamps it directly — used for display (`build_url`
-  in the payload) but not for grouping, so perf and accuracy results from the
-  same day still merge into one nightly via the day-bucket key.
+  because `lib/ingest.py` stamps it directly. That is what names the build of
+  every result with the same commit, perf included (above). It is not used
+  for grouping: perf and accuracy results from the same day and commit merge
+  into one nightly via the day-bucket key.
 - **A series is what ran:** model, device, precision, parallelism, ISL/OSL
   and concurrency. Changing any of those starts a new line, and a regression
   is only ever measured within one line.
@@ -191,12 +197,12 @@ page and this section in the same commit.
   so the page colours a new metric correctly without a frontend change.
 - `thresholds` holds the smallest moves that count, so the page never
   hard-codes them.
-- **`builds` is keyed by calendar day** (`"2026-09-30"`), not a Buildkite
-  build number. `build_url` is `""` for perf-only nightlies (the table
-  carries no link at all) and the real Buildkite build page — not a
-  per-job deep link, since there is no per-artifact job ID anymore — for
-  nightlies with an accuracy result. `nightly_runs` is always empty: see
-  [Data identity](#data-identity).
+- **`builds` is keyed by Buildkite build number** (`"617"`) where
+  `buildkite_builds` found one for the commit, and by calendar day
+  (`"2026-09-30"`) otherwise. `build_url` is the Buildkite build page (not a
+  per-job deep link: there is no job ID) when the number is real, and `""`
+  for a day key. `nightly_runs` is always empty: nothing reports a nightly
+  that produced no results (see [Data identity](#data-identity)).
 
 ```jsonc
 {
@@ -216,8 +222,12 @@ page and this section in the same commit.
     "accuracy": [{ "workload": "wl-mi355x", "model": "org/Model",
                    "device": "mi355x", "task": "gsm8k" }]
   },
-  // Each build (day) a point names, once: series points carry only the day.
+  // Each build a point names, once: series points carry only its key. A
+  // Buildkite build number where known, else the day.
   "builds": {
+    "617": { "date": "2026-09-30 17:44:42", "nightly_date": "2026-09-30", "vllm_commit": "...",
+             "build_commit": "...", "image": "...",
+             "build_url": "https://buildkite.com/vllm/perf-eval/builds/617" },
     "2026-09-26": { "date": "2026-09-26 14:00:28", "nightly_date": "2026-09-26", "vllm_commit": "...",
                     "build_commit": "", "image": "...", "build_url": "" }
   },
@@ -233,7 +243,7 @@ page and this section in the same commit.
       "metrics": {
         "tput_per_gpu": {
           "better": "higher", "label": "...", "unit": "tok/s/GPU",
-          "series": [{ "build": "2026-09-26", "value": 1200.0,
+          "series": [{ "build": "617", "value": 1200.0,
                        "completed_requests": null, "failed_requests": null }]
         }
       }

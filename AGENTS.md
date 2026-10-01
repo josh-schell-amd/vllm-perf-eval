@@ -18,7 +18,7 @@ what an agent needs to change the code safely and to run the workflows.
 | To change | Edit |
 |---|---|
 | Which results are collected, and how they are labeled | `scripts/perf_eval/databricks_collect.py`, `normalize.py` |
-| Workload recipes: coverage snapshot, accuracy model/device join | `scripts/perf_eval/recipes.py` |
+| Workload recipes: coverage snapshot, perf precision/parallelism, accuracy model/device | `scripts/perf_eval/recipes.py` |
 | Event timestamps, nightly identity, JSONL I/O | `scripts/perf_eval/events.py` |
 | The payload the page reads | `scripts/perf_eval/aggregate.py`, then the page, then the payload section of `docs/data-pipeline.md` |
 | A metric (label, unit, direction) | `METRIC_META` in `normalize.py`; the page reads it from the payload |

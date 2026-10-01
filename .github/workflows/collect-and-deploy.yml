@@ -104,8 +104,8 @@ jobs:
           DATABRICKS_WAREHOUSE_ID: ${{ secrets.DATABRICKS_WAREHOUSE_ID }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Optional: reads gated models' config.json for their precision, in
-          # the expected-configs snapshot (results trust Databricks directly).
+          # Optional: reads gated models' config.json for their precision,
+          # which labels both results and Coverage.
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: python scripts/perf_eval/databricks_collect.py --output data/events.jsonl
 

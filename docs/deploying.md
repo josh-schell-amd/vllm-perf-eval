@@ -20,15 +20,15 @@ New repository secret, or `gh secret set <NAME>`.
 |---|---|---|
 | `DATABRICKS_HOST` | The Databricks workspace hostname to query | Read access to `vllm_perf_data_ingest` and `vllm_eval_data_ingest` |
 | `DATABRICKS_WAREHOUSE_ID` | The SQL warehouse to run the query against | — |
-| `DATABRICKS_TOKEN` | Authenticates the query | **Read-only**: `databricks_collect.py` only ever issues `SELECT`, and `tests/test_token_safety.py` asserts that, but a token scoped to write would still be more than it needs |
+| `DATABRICKS_TOKEN` | Authenticates the query | **Read-only**: `SELECT` on the two tables, `USE` on their schema and catalog, and *Can use* on the warehouse, ideally for a service principal rather than a person. `databricks_collect.py` only ever issues `SELECT`, and `tests/test_token_safety.py` asserts that, but a token that can write would be more than it needs |
 | `DASHBOARD_USERNAME`, `DASHBOARD_PASSWORD` | The login that seals the published data and opens it in the page | Choose a long password: the sealed file is public, so it can be guessed at offline |
-| `HF_TOKEN` (optional) | Read a gated model's `config.json` on Hugging Face, for the expected-configs snapshot's precision | A Hugging Face read token |
+| `HF_TOKEN` (optional) | Read a gated model's `config.json` on Hugging Face, for its precision | A Hugging Face read token |
 | `GITHUB_TOKEN` | Read the public workload recipes | Provided by Actions; nothing to add |
 
-Without `HF_TOKEN`, a gated model's precision in the Coverage card's expected
-configs falls back to the recipe and its name, and may read "unstated" (this
-does not affect published *results*, which trust Databricks's own resolved
-`precision` field directly).
+Without `HF_TOKEN`, a gated model's precision falls back to the recipe and
+its name, and may read "unstated". That applies to its results as well as to
+Coverage: both take precision from the recipe, because the Databricks rows'
+own `precision` falls back to `bf16`.
 
 Then, in the site repository, Settings → Pages → Source → **GitHub Actions**.
 The deploy job uploads the built site as an artifact and deploys it; no branch
