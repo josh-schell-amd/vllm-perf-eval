@@ -1720,10 +1720,21 @@ function renderPerformanceTab() {
       ? '<span class="hint-key"><span class="failed-mark">⚠</span>newest run had failed requests: '
         + 'not comparable to a clean run</span>' : '')
     + '</div>';
+  // A bar from an older build looks like tonight's except for its shade, so
+  // each card also says how many of its configs the newest build lacks.
+  const latest = latestNightly();
+  const absentBadge = g => {
+    const absent = g.rows.filter(r => !r.c.nights.has(latest)).length;
+    return absent
+      ? '<span class="absent-badge">' + absent + ' of ' + g.rows.length + ' not in #'
+        + esc(latestNightlyBuild() || '?') + '</span>'
+      : '';
+  };
   html += groups.length
     ? '<div class="perf-grid">' + groups.map((g, i) =>
       '<div class="perf-card' + (groups.length <= 2 ? ' hero' : '') + '">'
-      + '<h4 style="color:' + esc(g.color) + '">' + esc(g.name) + '</h4>'
+      + '<div class="perf-card-head"><h4 style="color:' + esc(g.color) + '">' + esc(g.name) + '</h4>'
+      + absentBadge(g) + '</div>'
       + '<div class="perf-wrap"><canvas id="perf-' + i + '"></canvas></div></div>').join('') + '</div>'
     : '<div class="empty">No runs of ' + esc(metric.label) + ' for these filters.</div>';
   html += '</div>' + renderPerfTable(configs);
@@ -2462,9 +2473,9 @@ function renderAccuracyTab() {
       + '<br><span class="neutral" style="font-size:11px">' + esc(accuracyMetricLabel(s.metric)) + '</span></td>'
       + '<td class="num">' + (v ? esc(accuracyPercent(v.base)) : '—') + '</td>'
       + '<td class="num ' + cls + ' mono">' + (v ? esc(accuracyPoints(v.delta, true)) : '—') + '</td>'
-      + '<td>' + (!current ? '<span class="pill">not in #' + esc(tonight) + '</span>'
+      + '<td>' + (!current ? '<span class="pill">not in #' + esc(nightLabel(tonight) || '?') + '</span>'
         : !v ? '<span class="pill">first run</span>'
-        : !overnight ? '<span class="pill">skipped #' + esc(previous) + '</span>'
+        : !overnight ? '<span class="pill">skipped #' + esc(nightLabel(previous) || '?') + '</span>'
         : v.regressed ? '<span class="pill alert">regressed</span>'
         : v.counted ? '<span class="pill ok">improved</span>'
         : '<span class="pill">within ' + esc(threshold) + '</span>') + '</td>'

@@ -275,6 +275,9 @@ a:hover .ext-inline, .reg-item.linked:hover .ext-inline { opacity: 1; transform:
 }
 .perf-card { background: var(--bg-secondary); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 14px; }
 .perf-card h4 { font-size: 13px; font-weight: 600; margin-bottom: 8px; }
+.perf-card-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin-bottom: 8px; }
+.perf-card-head h4 { margin-bottom: 0; }
+.absent-badge { font-size: 11px; color: var(--accent-orange); border: 1px solid var(--accent-orange); border-radius: 10px; padding: 1px 8px; white-space: nowrap; }
 .perf-card.has-reg { border-color: var(--accent-red); }
 .perf-wrap { position: relative; height: 300px; }
 .perf-card.hero .perf-wrap { height: 360px; }

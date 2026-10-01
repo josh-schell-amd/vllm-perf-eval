@@ -74,7 +74,9 @@ URL, so **Copy link** reproduces the view.
 - One bar chart per model and device, since per-GPU numbers don't compare
   across devices.
 - Darker bar = higher concurrency. Red outline = at least 0.5% worse than
-  the previous run. Faded = not in the newest nightly.
+  the previous run. Faded = not in the newest nightly: the bar shows its last
+  value from an older build. A card with any such bar says so at its top
+  right, in orange: `4 of 4 not in #625`.
 - Hover for the value, build, commit and change: `vs the previous run
   (2026-09-29)`, or `vs an older run (2026-09-18)` if the config skipped the
   previous run, or *No previous run*. Changes are counted by run, not by
