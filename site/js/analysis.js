@@ -166,6 +166,12 @@ function isRetired(config, latest, expectedKeys) {
   return expectedKeys.size > 0 && !config.nights.has(latest) && !expectedKeys.has(configKeyOf(config));
 }
 
+// "9/30" for "2026-09-30": the view spans 30 days, so the year is noise.
+function shortDay(day) {
+  const [, month, date] = String(day || '').split('-');
+  return date ? Number(month) + '/' + Number(date) : '?';
+}
+
 function lenLabel(v) {
   if (v == null) return '?';
   return v >= 1024 && v % 1024 === 0 ? (v / 1024) + 'K' : String(v);
@@ -285,6 +291,7 @@ const api = {
   regTier,
   configKeyOf,
   isRetired,
+  shortDay,
   lenLabel,
   shapeLabel,
   variantLabel,

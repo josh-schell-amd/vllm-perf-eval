@@ -25,6 +25,7 @@ const {
   regTier,
   configKeyOf,
   isRetired,
+  shortDay,
   lenLabel,
   shapeLabel,
   variantLabel,
@@ -1078,8 +1079,7 @@ function dayAxis(min, max, theme, points) {
   // A label as [text, colour] pieces, in reading order.
   const pieces = v => {
     const day = fmtDate(v);
-    const [, month, date] = day.split('-');
-    const label = Number(month) + '/' + Number(date);
+    const label = shortDay(day);
     const sha = commits.get(day);
     if (sha && sha !== '—') return [[label, colors.date], [' ' + sha, colors.commit]];
     if (isMissing(day)) return [[label + ' missing', colors.missing]];
@@ -1475,8 +1475,7 @@ function notOvernightNote(latest) {
 function comparedWhen(latest) {
   const before = latest.before;
   if (latest.overnight) return 'the previous run (#' + (before.build_number || '?') + ')';
-  const [, month, date] = before.day.split('-');
-  return 'an older run (#' + (before.build_number || '?') + ', ' + Number(month) + '/' + Number(date) + ')';
+  return 'an older run (#' + (before.build_number || '?') + ', ' + shortDay(before.day) + ')';
 }
 
 // Colour a change only when it is overnight and past the threshold. A drop
@@ -1586,15 +1585,14 @@ function renderPerformanceTab() {
     + '</div>';
   // A faded bar is an older build's value, so each card names what is missing
   // tonight and which build its faded bars show.
+  const tonight = latestRun();
   const absentBadge = g => {
     const absent = g.rows.filter(r => !r.latest.tonight);
     if (!absent.length) return '';
-    const shown = [...new Set(absent.map(r => String(r.latest.point.build_number)))]
-      .sort((a, b) => Number(a) - Number(b) || a.localeCompare(b));
+    const shown = [...new Set(absent.map(r => r.latest.point.day))].sort().map(shortDay);
     return '<span class="absent-badge">'
       + (absent.length === g.rows.length ? 'Missing' : absent.length + ' of ' + g.rows.length + ' missing')
-      + ' in #' + esc(latestNightlyBuild() || '?') + ' · showing ' + shown.map(b => '#' + esc(b)).join(', ')
-      + '</span>';
+      + ' ' + esc(shortDay(tonight && tonight.day)) + ' · showing ' + esc(shown.join(', ')) + '</span>';
   };
   html += groups.length
     ? '<div class="perf-grid">' + groups.map((g, i) =>

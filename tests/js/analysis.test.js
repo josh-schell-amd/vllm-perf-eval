@@ -20,6 +20,12 @@ test('isRetired: only a config the newest build neither ran nor expected', () =>
   assert.equal(a.isRetired({ ...cfg, nights: new Set(['old']) }, 'new', new Set()), false);
 });
 
+test('shortDay drops the year and leading zeros', () => {
+  assert.equal(a.shortDay('2026-09-30'), '9/30');
+  assert.equal(a.shortDay('2026-10-01'), '10/1');
+  assert.equal(a.shortDay(''), '?');
+});
+
 test('esc neutralises every character that can break out of markup', () => {
   assert.equal(a.esc(`<a href="x" onclick='y'>&</a>`),
     '&lt;a href=&quot;x&quot; onclick=&#39;y&#39;&gt;&amp;&lt;/a&gt;');
