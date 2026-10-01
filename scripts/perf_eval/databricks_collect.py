@@ -16,13 +16,20 @@ these rows either, so identity is a calendar-day bucket of each row's own
 ingest timestamp instead — a nightly retried on a different day is not
 folded back into the original one. See docs/data-pipeline.md.
 
-``vllm_perf_data_ingest`` rows already carry resolved ``precision``,
-``tp``/``ep``/``dp_attention``, and per-GPU metrics pre-converted to
-seconds — this collector trusts them directly rather than re-deriving them
-from a recipe. ``vllm_eval_data_ingest`` rows carry real Buildkite identity
-but no ``model``/``device``; those are recovered from the workload recipe
-(fetched at ``main``, the only remaining recipe dependency besides the
-coverage card).
+``vllm_perf_data_ingest`` rows carry per-GPU metrics pre-converted to
+seconds, which are used as they are. Their ``precision`` and ``tp`` are not:
+perf-eval stamps ``precision`` from a model-name marker, falling back to
+``bf16`` (so an int4 or fp8 checkpoint with no marker reads ``bf16``), and
+``tp`` is TP x DP as one number. Both come from the matching workload recipe
+instead (``recipe_labels``), the same derivation the coverage card's
+expected configs use, so results and expectations agree.
+``vllm_eval_data_ingest`` rows carry real Buildkite identity but no
+``model``/``device``; those are recovered from the workload recipe too.
+Recipes are read at ``main``.
+
+Queries go through the SQL Statement Execution REST API, not
+databricks-sql-connector: one documented HTTP call, no Thrift client in the
+job that holds the token (connector 4.6's Thrift paging also lost rows).
 """
 
 from __future__ import annotations
@@ -33,8 +40,12 @@ import logging
 import os
 import re
 import sys
+import time
+from collections import Counter
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+
+import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -45,6 +56,7 @@ from perf_eval.events import (  # noqa: E402
 )
 from perf_eval.normalize import (  # noqa: E402
     is_amd_workload,
+    parallel_key,
     perf_metrics,
     score_rows,
     to_int,
@@ -122,29 +134,81 @@ def perf_parallelism(row: dict) -> dict:
     return parallelism
 
 
-def perf_event(row: dict) -> dict | None:
-    """A canonical ``perf_result`` event from a ``vllm_perf_data_ingest`` row."""
+def _recipe_shape(model, device, isl, osl, conc, tp) -> tuple:
+    return (
+        str(model or "").strip(),
+        str(device or "").strip(),
+        to_int(isl),
+        to_int(osl),
+        to_int(conc),
+        to_int(tp),
+    )
+
+
+def recipe_labels(recipes: dict[str, tuple[dict, dict]]) -> dict[tuple, tuple[str, dict]]:
+    """(precision, parallelism) per recipe config, keyed on what a perf row
+    carries: model, device, ISL/OSL, concurrency and perf-eval's ``tp``.
+
+    A shape two recipes share with different labels is left out, so its rows
+    keep the row's own TP and an unstated precision rather than a guess.
+    """
+    found: dict[tuple, set] = {}
+    labels: dict[tuple, tuple[str, dict]] = {}
+    for entry, configs in recipes.values():
+        for config in configs.values():
+            shape = _recipe_shape(
+                entry.get("model"),
+                entry.get("device"),
+                config.get("isl"),
+                config.get("osl"),
+                config.get("conc"),
+                entry.get("bench_tp"),
+            )
+            label = (entry.get("precision") or "", entry.get("parallelism") or {})
+            found.setdefault(shape, set()).add((label[0], parallel_key(label[1])))
+            labels[shape] = label
+    return {shape: label for shape, label in labels.items() if len(found[shape]) == 1}
+
+
+def perf_event(
+    row: dict, *, labels: dict[tuple, tuple[str, dict]], drops: Counter | None = None
+) -> dict | None:
+    """A canonical ``perf_result`` event from a ``vllm_perf_data_ingest`` row,
+    labeled from its recipe (``recipe_labels``). ``drops`` counts why rows
+    were left out, for the run log."""
+    drops = drops if drops is not None else Counter()
     if not is_nightly_row(row):
+        drops["perf: not nightly"] += 1
         return None
     device = str(row.get("device") or "").strip()
     image = str(row.get("image") or "").strip()
     if not is_amd_workload(image=image, device=device):
+        drops["perf: not AMD"] += 1
         return None
     metrics = perf_metrics(row)
     if not metrics:
+        drops["perf: no metrics"] += 1
         return None
     date = str(row.get("date") or "").strip()
     day = day_bucket(date)
     if not day:
+        drops["perf: no date"] += 1
         return None
+    model = str(row.get("model") or "").strip()
+    label = labels.get(
+        _recipe_shape(model, device, row.get("isl"), row.get("osl"), row.get("conc"), row.get("tp"))
+    )
+    if label is None:
+        drops["perf: kept, no matching recipe (precision unstated)"] += 1
+    precision, parallelism = label if label else ("", perf_parallelism(row))
     return {
         "event": "perf_result",
         "received_at": utcnow_iso(),
         "nightly": True,
-        "model": str(row.get("model") or "").strip(),
+        "model": model,
         "device": device,
-        "precision": str(row.get("precision") or "").strip(),
-        "parallelism": perf_parallelism(row),
+        "precision": precision,
+        "parallelism": parallelism,
         "isl": row.get("isl"),
         "osl": row.get("osl"),
         "conc": row.get("conc"),
@@ -162,22 +226,33 @@ def perf_event(row: dict) -> dict | None:
     }
 
 
-def accuracy_event(row: dict, *, recipes: dict[str, tuple[dict, dict]]) -> dict | None:
+def accuracy_event(
+    row: dict, *, recipes: dict[str, tuple[dict, dict]], drops: Counter | None = None
+) -> dict | None:
     """A canonical ``accuracy_result`` event from a ``vllm_eval_data_ingest`` row.
 
     ``vllm_eval_data_ingest`` rows carry real Buildkite identity but no
     ``model``/``device``; both are recovered from the workload recipe.
+    ``drops`` counts why rows were left out, for the run log.
     """
-    if row.get("kind") != "results" or not is_nightly_row(row):
+    drops = drops if drops is not None else Counter()
+    if row.get("kind") != "results":
+        drops["eval: not a results row"] += 1
+        return None
+    if not is_nightly_row(row):
+        drops["eval: not nightly"] += 1
         return None
     workload = str(row.get("workload") or "").strip()
     task = str(row.get("task") or "").strip()
     image = str(row.get("image") or "").strip()
     recipe = recipes.get(workload)
+    if recipe is None:
+        drops["eval: workload not in recipes"] += 1
     entry = recipe[0] if recipe else {}
     device = str(entry.get("device") or "").strip()
     model = str(entry.get("model") or "").strip()
     if not is_amd_workload(workload=workload, image=image, device=device):
+        drops["eval: not AMD"] += 1
         return None
     rows = score_rows(
         [
@@ -189,10 +264,12 @@ def accuracy_event(row: dict, *, recipes: dict[str, tuple[dict, dict]]) -> dict 
         ]
     )
     if not rows:
+        drops["eval: no scores"] += 1
         return None
     build_number = str(row.get("buildkite_build_number") or "").strip()
     day = day_bucket(str(row.get("_ingest_timestamp") or ""))
     if not day:
+        drops["eval: no date"] += 1
         return None
     return {
         "event": "accuracy_result",
@@ -220,53 +297,126 @@ def accuracy_event(row: dict, *, recipes: dict[str, tuple[dict, dict]]) -> dict 
 # ---------------------------------------------------------------------------
 
 
-def _connect():
-    import databricks.sql
+STATEMENTS_API = "/api/2.0/sql/statements"
+HTTP_TIMEOUT = 60
+QUERY_TIMEOUT = 600
+POLL_SECONDS = 5
 
-    host = os.environ["DATABRICKS_HOST"]
-    http_path = f"/sql/1.0/warehouses/{os.environ['DATABRICKS_WAREHOUSE_ID']}"
-    token = os.environ["DATABRICKS_TOKEN"]
-    return databricks.sql.connect(server_hostname=host, http_path=http_path, access_token=token)
+# Eval "results" rows carry lm-eval's whole output (configs, per-task
+# settings); only these fields are read, so only these are fetched.
+EVAL_FIELDS = (
+    "kind",
+    "nightly",
+    "workload",
+    "task",
+    "image",
+    "vllm_commit",
+    "buildkite_build_number",
+    "buildkite_build_url",
+    "buildkite_commit",
+    "buildkite_branch",
+    "data.results",
+)
 
 
-def _parse_variant(value):
-    """The connector may return a VARIANT column as a dict/list already, or
-    as its JSON text; handle both."""
-    if isinstance(value, (dict, list)) or value is None:
-        return value
-    return json.loads(value)
+def _base_url() -> str:
+    # The connector took a bare hostname, so the secret may be one.
+    host = os.environ["DATABRICKS_HOST"].strip().rstrip("/")
+    return host if host.startswith("https://") else f"https://{host}"
 
 
-def fetch_rows(conn, table: str, *, since: datetime) -> list[dict]:
-    """Every row's parsed ``message``, with the ingest ``timestamp`` folded in
-    as ``_ingest_timestamp``. Filtered server-side by ingest time, and
-    re-checked client-side since a VARIANT predicate is easy to get subtly
-    wrong and this is cheap to double-check.
+def run_query(statement: str, parameters: dict[str, str]) -> list[list]:
+    """Every row of a read-only statement, via the SQL Statement Execution API.
 
-    VARIANT columns need an explicit ``::`` cast before Databricks will
-    compare or order on them (``DATATYPE_MISMATCH.INVALID_ORDERING_TYPE``
-    otherwise) — confirmed against the real warehouse.
+    Waits for the statement, then follows every result chunk, and fails if
+    the rows received are not all the rows the manifest reports.
+    """
+    session = requests.Session()
+    session.headers["Authorization"] = f"Bearer {os.environ['DATABRICKS_TOKEN']}"
+    base = _base_url()
+    resp = session.post(
+        base + STATEMENTS_API,
+        json={
+            "warehouse_id": os.environ["DATABRICKS_WAREHOUSE_ID"],
+            "statement": statement,
+            "parameters": [{"name": k, "value": v} for k, v in parameters.items()],
+            "disposition": "INLINE",
+            "format": "JSON_ARRAY",
+            "wait_timeout": "50s",
+            "on_wait_timeout": "CONTINUE",
+        },
+        timeout=HTTP_TIMEOUT,
+    )
+    resp.raise_for_status()
+    body = resp.json()
+    deadline = time.monotonic() + QUERY_TIMEOUT
+    while body["status"]["state"] in ("PENDING", "RUNNING"):
+        if time.monotonic() > deadline:
+            raise TimeoutError(f"Databricks query still running after {QUERY_TIMEOUT}s")
+        time.sleep(POLL_SECONDS)
+        resp = session.get(f"{base}{STATEMENTS_API}/{body['statement_id']}", timeout=HTTP_TIMEOUT)
+        resp.raise_for_status()
+        body = resp.json()
+    state = body["status"]["state"]
+    if state != "SUCCEEDED":
+        error = (body["status"].get("error") or {}).get("message", "no error message")
+        raise RuntimeError(f"Databricks query {state}: {error}")
+
+    manifest = body.get("manifest") or {}
+    if manifest.get("truncated"):
+        raise RuntimeError("Databricks truncated the result; narrow the query")
+    result = body.get("result") or {}
+    rows = list(result.get("data_array") or [])
+    while link := result.get("next_chunk_internal_link"):
+        resp = session.get(base + link, timeout=HTTP_TIMEOUT)
+        resp.raise_for_status()
+        result = resp.json()
+        rows.extend(result.get("data_array") or [])
+    expected = manifest.get("total_row_count")
+    if expected is not None and len(rows) != expected:
+        raise RuntimeError(f"Databricks reported {expected} rows but {len(rows)} arrived")
+    return rows
+
+
+def fetch_rows(table: str, *, since: datetime, fields: tuple[str, ...] | None = None) -> list[dict]:
+    """Nightly rows' ``message`` since ``since``, with the ingest
+    ``timestamp`` as ``_ingest_timestamp``. ``fields`` (dotted paths) limits
+    the message to those fields; ``None`` fetches all of it.
+
+    Values come back through ``to_json``, so each is the exact JSON the ingest
+    script sent: the strict client-side checks (``is_nightly_row``) still see
+    a boolean ``true`` apart from a string ``"true"``. VARIANT paths need a
+    ``::`` cast to be compared (``DATATYPE_MISMATCH`` otherwise).
     """
     cutoff = since.strftime("%Y-%m-%dT%H:%M:%S")
-    # Nightly rows only, server-side, so less is transferred; the strict
-    # client-side is_nightly_row check still applies afterwards.
-    query = (
-        f"SELECT message, request_metadata:timestamp::string AS ingest_ts "  # noqa: S608
-        f"FROM {table} WHERE request_metadata:timestamp::string >= %(cutoff)s "
-        f"AND try_cast(message:nightly AS BOOLEAN)"
+    columns = ["to_json(message)"] if fields is None else [f"to_json(message:{f})" for f in fields]
+    # Nightly rows only, server-side, so less is transferred; an eval
+    # table's per-question "samples" rows are dropped there too.
+    where = [
+        "request_metadata:timestamp::string >= :cutoff",
+        "try_cast(message:nightly AS BOOLEAN)",
+    ]
+    if table == EVAL_TABLE:
+        where.append("message:kind::string = 'results'")
+    statement = (
+        f"SELECT request_metadata:timestamp::string, {', '.join(columns)} "  # noqa: S608
+        f"FROM {table} WHERE {' AND '.join(where)}"
     )
-    # Async, not execute(): a synchronous execute() takes the first batch
-    # inline, and connector 4.6 drops that batch and then fails asking for
-    # row 0 ("expected results to start from 0 but they instead start at N").
-    # The async path fetches from row 0 itself.
-    with conn.cursor() as cur:
-        cur.execute_async(query, {"cutoff": cutoff})
-        cur.get_async_execution_result()
-        rows = cur.fetchall()
 
     out = []
-    for message, ingest_ts in rows:
-        row = _parse_variant(message)
+    for ingest_ts, *values in run_query(statement, {"cutoff": cutoff}):
+        if fields is None:
+            row = json.loads(values[0]) if values[0] else None
+        else:
+            row = {}
+            for path, value in zip(fields, values, strict=True):
+                if value is None:
+                    continue
+                *parents, leaf = path.split(".")
+                node = row
+                for parent in parents:
+                    node = node.setdefault(parent, {})
+                node[leaf] = json.loads(value)
         if not isinstance(row, dict):
             continue
         ingest_ts = str(ingest_ts or "")
@@ -287,12 +437,8 @@ def collect(*, days: int, gh_token: str, dry_run: bool = False) -> list[dict]:
         raise ValueError(f"perf-eval lookback must be between 1 and {WINDOW_DAYS} days")
 
     since = datetime.now(UTC) - timedelta(days=days)
-    conn = _connect()
-    try:
-        perf_rows = fetch_rows(conn, PERF_TABLE, since=since)
-        eval_rows = fetch_rows(conn, EVAL_TABLE, since=since)
-    finally:
-        conn.close()
+    perf_rows = fetch_rows(PERF_TABLE, since=since)
+    eval_rows = fetch_rows(EVAL_TABLE, since=since, fields=EVAL_FIELDS)
     log.info(
         "Fetched %d %s rows and %d %s rows since %s",
         len(perf_rows),
@@ -304,15 +450,25 @@ def collect(*, days: int, gh_token: str, dry_run: bool = False) -> list[dict]:
 
     recipes = fetch_workload_map(gh_token, ref=RECIPE_REF)
 
+    labels = recipe_labels(recipes)
+    drops: Counter = Counter()
     events: list[dict] = []
     for row in perf_rows:
-        event = perf_event(row)
+        event = perf_event(row, labels=labels, drops=drops)
         if event is not None:
             events.append(event)
     for row in eval_rows:
-        event = accuracy_event(row, recipes=recipes)
+        event = accuracy_event(row, recipes=recipes, drops=drops)
         if event is not None:
             events.append(event)
+    # Counts only: this log is public.
+    for reason, count in sorted(drops.items()):
+        log.info("%s: %d rows", reason, count)
+    log.info(
+        "Kept %d perf_result and %d accuracy_result events",
+        sum(1 for e in events if e["event"] == "perf_result"),
+        sum(1 for e in events if e["event"] == "accuracy_result"),
+    )
 
     expected = expected_configs(recipes)
     if expected:

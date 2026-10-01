@@ -76,12 +76,16 @@ python -m http.server 8765 --directory /tmp/site
   historical results are labeled, change the code and run Collect and Deploy
   (below) — it always re-derives everything, there is no separate rebuild
   mode anymore.
-- **Trust Databricks's own resolved fields.** Perf rows already carry
-  `precision`, `tp`/`ep`/`dp_attention`, and pre-converted per-GPU metrics;
-  don't re-derive them from a recipe (see `docs/data-pipeline.md`'s Data
-  identity section for the one known gap this creates). Accuracy rows carry
-  neither `model` nor `device` — those come from a recipe join on `workload`,
-  the one case where the code still reads a recipe for labeling.
+- **Don't trust a perf row's `precision` or `tp`.** perf-eval falls back to
+  `bf16` when the model name has no precision marker, and its `tp` is TP×DP.
+  Both come from the matching recipe (`recipe_labels`), which is how Coverage
+  derives them too, so results and Coverage agree. The per-GPU metrics are
+  used as the row has them. Accuracy rows carry neither `model` nor
+  `device`; those come from a recipe join on `workload`. See
+  `docs/data-pipeline.md`'s Data identity section.
+- **Every dropped row is counted by reason in the run log.** When a chart or
+  Coverage looks wrong, read those counts in the Collect step before
+  changing code.
 - **A nightly's identity is a calendar-day bucket** of its ingest timestamp,
   not a Buildkite build number or message-parsed date. See
   `docs/data-pipeline.md`'s Data identity section for what this costs (a

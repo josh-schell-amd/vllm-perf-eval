@@ -41,11 +41,18 @@ so every run queries it fresh (filtered to `WINDOW_DAYS`) and rebuilds
 `data/events.jsonl` from scratch; it is a plain file for `aggregate.py` to
 read in the same run, not a store anyone pushes to.
 
+Queries go through Databricks' SQL Statement Execution REST API
+(`run_query`), with `requests`, not `databricks-sql-connector`: its Thrift
+paging failed on our results, and it pulled a dozen packages into the job
+that holds the token. Each query is one read-only `SELECT`. The collector
+follows every result chunk and fails if fewer rows arrive than the result
+manifest reports.
+
 Workload recipes are still read from the public `vllm-project/perf-eval`
-repo, but only for two things neither Databricks table can carry itself: the
-`expected_configs`/`expected_accuracy` snapshot behind the Coverage card, and
-a `model`/`device` label for accuracy rows (`vllm_eval_data_ingest` carries
-neither; see [Data identity](#data-identity)). Recipes are always read at
+repo, for three things the Databricks rows don't carry correctly: the
+`expected_configs`/`expected_accuracy` snapshot behind the Coverage card, the
+precision and parallelism of perf rows, and a `model`/`device` label for
+accuracy rows (see [Data identity](#data-identity)). Recipes are always read at
 `main` — there is no per-nightly perf-eval commit to pin to anymore, so a
 recipe rename or removal can change how an older result is labeled. Accepted
 tradeoff, in keeping with the rest of this design: see below.
@@ -80,7 +87,8 @@ after sign-in ([deploying.md](deploying.md#the-login)).
 
 | Situation | Result |
 |---|---|
-| Databricks cannot be reached, or the query fails | Fails the run: no payload is built from a partial or absent query |
+| Databricks cannot be reached, the query fails, or fewer rows arrive than it reported | Fails the run: no payload is built from a partial or absent query |
+| A row is dropped for being out of scope or unusable | Counted by reason in the run log (counts only), so a missing chart can be traced |
 | A row's `message` is not valid JSON, or is missing fields a perf/accuracy event needs | Skipped |
 | A perf row with no positive throughput metrics | Skipped, rather than published as zero throughput |
 | `data/events.jsonl` (this run's file) cannot be read by `aggregate.py` | Fails the run |
@@ -129,20 +137,23 @@ nightly is missing, split into two, or mislabeled.
   anymore: a nightly is invisible until it has actually produced at least one
   ingestable row. Accepted tradeoff — see the KPI card's behavior in
   [reading-the-dashboard.md](reading-the-dashboard.md).
-- **Precision, parallelism and per-GPU metrics are trusted directly from
-  Databricks**, not re-derived from the recipe. `vllm_perf_data_ingest` rows
-  already carry a resolved `precision` string and pre-converted per-GPU
-  throughput/latency metrics (see `lib/ingest_perf.py` in the sibling
-  `perf-eval` repo). The `parallelism` dict is built from the row's own
-  `tp`/`ep`/`dp_attention` scalars (`databricks_collect.py:perf_parallelism`),
-  not parsed from `serve_args`.
-  - **Known gap:** `tp` there means TP×DP as a single int, not vLLM's
-    individual flags, so a recipe using pipeline or prefill-context
-    parallelism cannot be distinguished from one that doesn't, and the
-    per-GPU divisor the row already applied may not match what
-    `gpu_count()` would compute from a full parallelism map. The raw,
-    un-divided throughput isn't stored anywhere to re-derive it. Only
-    matters once a recipe actually uses PP or PCP.
+- **A perf row's precision and parallelism come from its recipe, not the
+  row.** perf-eval stamps `precision` from the recipe's
+  `metadata.precision`, else a marker in the model name, else `bf16`
+  (`precision_from_model` in its `lib/parse_workload.py`). So an int4 or fp8
+  checkpoint whose name says neither is stored as `bf16`. Its `tp` is
+  `metadata.tp`, else TP×DP as one number. `recipe_labels` keys every recipe
+  config on what a row does carry: model, device, ISL/OSL, concurrency and
+  that same `tp` (`bench_tp` in `recipes.py`). Each matching row takes the
+  recipe's precision (derived as for Coverage: recipe, `--quantization`, the
+  checkpoint's `config.json`, `--dtype`) and full parallelism map, so results
+  and Coverage agree. A row with no match, or one matching two recipes that
+  label it differently, keeps its own TP and an unstated precision, and the
+  run log counts it.
+  - **Per-GPU metrics are used as the row has them**, already divided by
+    that `tp`. The raw throughput isn't stored, so a recipe using pipeline or
+    prefill-context parallelism can't be re-divided by `gpu_count()`. This
+    only matters once a recipe uses PP or PCP.
 - **Accuracy rows have no `model`/`device` field at all** — `lib/ingest.py`
   never stamps them. Both are recovered by joining the row's `workload` name
   against the recipe map fetched at `main`

@@ -34,7 +34,9 @@ _WRITE_VERBS = (
     "MERGE INTO",
     "DROP ",
     "ALTER ",
-    "TRUNCATE",
+    # Trailing space like the others: the Statement API's `truncated` result
+    # flag is not a write.
+    "TRUNCATE ",
 )
 
 

@@ -6,13 +6,23 @@ building this collector); see docs/data-pipeline.md.
 
 from __future__ import annotations
 
+import json
+from collections import Counter
+
+import pytest
+
+from perf_eval import databricks_collect
 from perf_eval.databricks_collect import (
+    EVAL_TABLE,
     accuracy_event,
     commit_from_image,
     day_bucket,
+    fetch_rows,
     is_nightly_row,
     perf_event,
     perf_parallelism,
+    recipe_labels,
+    run_query,
 )
 
 # A real vllm_perf_data_ingest row (lib/ingest_perf.py's payload shape).
@@ -84,10 +94,17 @@ EVAL_ROW = {
 
 RECIPES = {
     "kimi_k2_5-mi300x": (
-        {"model": "moonshotai/Kimi-K2.5", "device": "mi300x"},
-        {},
+        {
+            "model": "moonshotai/Kimi-K2.5",
+            "device": "mi300x",
+            "precision": "int4",
+            "parallelism": {"tensor_parallel_size": 8},
+            "bench_tp": 8,
+        },
+        {"bench-conc-128": {"isl": 1024, "osl": 1024, "conc": 128}},
     )
 }
+LABELS = recipe_labels(RECIPES)
 
 
 class TestCommitFromImage:
@@ -151,12 +168,13 @@ class TestPerfParallelism:
 
 class TestPerfEvent:
     def test_builds_a_canonical_event(self):
-        event = perf_event(dict(PERF_ROW))
+        event = perf_event(dict(PERF_ROW), labels=LABELS)
         assert event is not None
         assert event["event"] == "perf_result"
         assert event["model"] == "moonshotai/Kimi-K2.5"
         assert event["device"] == "mi300x"
-        assert event["precision"] == "bf16"
+        # The recipe's precision, not the row's bf16 fallback.
+        assert event["precision"] == "int4"
         assert event["parallelism"] == {"tensor_parallel_size": 8}
         assert event["isl"] == 1024 and event["osl"] == 1024 and event["conc"] == 128
         assert event["date"] == "2026-09-30 17:44:42"
@@ -167,7 +185,7 @@ class TestPerfEvent:
 
     def test_non_nightly_row_is_dropped(self):
         row = {**PERF_ROW, "nightly": False}
-        assert perf_event(row) is None
+        assert perf_event(row, labels=LABELS) is None
 
     def test_non_amd_row_is_dropped(self):
         row = {
@@ -175,7 +193,7 @@ class TestPerfEvent:
             "device": "h200",
             "image": "public.ecr.aws/q9t5s3a7/vllm-release-repo:ac68c30-x86_64",
         }
-        assert perf_event(row) is None
+        assert perf_event(row, labels=LABELS) is None
 
     def test_no_metrics_is_dropped(self):
         row = {
@@ -188,7 +206,37 @@ class TestPerfEvent:
             and "intvty" not in k
             and "tput" not in k
         }
-        assert perf_event(row) is None
+        assert perf_event(row, labels=LABELS) is None
+
+    def test_no_matching_recipe_keeps_the_row_with_precision_unstated(self):
+        drops = Counter()
+        event = perf_event({**PERF_ROW, "conc": 7}, labels=LABELS, drops=drops)
+        assert event is not None
+        assert event["precision"] == ""
+        assert event["parallelism"] == {"tensor_parallel_size": 8}
+        assert drops == {"perf: kept, no matching recipe (precision unstated)": 1}
+
+    def test_dropped_rows_are_counted_by_reason(self):
+        drops = Counter()
+        perf_event({**PERF_ROW, "nightly": False}, labels=LABELS, drops=drops)
+        assert drops == {"perf: not nightly": 1}
+
+
+class TestRecipeLabels:
+    def test_tp_is_perf_evals_tp_times_dp(self):
+        entry = {**RECIPES["kimi_k2_5-mi300x"][0], "bench_tp": 8}
+        entry["parallelism"] = {"tensor_parallel_size": 4, "data_parallel_size": 2}
+        labels = recipe_labels({"w": (entry, RECIPES["kimi_k2_5-mi300x"][1])})
+        event = perf_event(dict(PERF_ROW), labels=labels)
+        assert event is not None
+        assert event["parallelism"] == {"tensor_parallel_size": 4, "data_parallel_size": 2}
+
+    def test_a_shape_two_recipes_label_differently_is_left_out(self):
+        entry, configs = RECIPES["kimi_k2_5-mi300x"]
+        labels = recipe_labels(
+            {"a": (entry, configs), "b": ({**entry, "precision": "fp8"}, configs)}
+        )
+        assert labels == {}
 
 
 class TestAccuracyEvent:
@@ -207,6 +255,11 @@ class TestAccuracyEvent:
         assert event["results"] == [
             {"task": "gsm8k", "metric": "exact_match,strict-match", "value": 0.82, "primary": True}
         ]
+
+    def test_dropped_rows_are_counted_by_reason(self):
+        drops = Counter()
+        accuracy_event({**EVAL_ROW, "data": {"results": {}}}, recipes=RECIPES, drops=drops)
+        assert drops == {"eval: no scores": 1}
 
     def test_samples_kind_is_dropped(self):
         row = {**EVAL_ROW, "kind": "samples"}
@@ -233,3 +286,111 @@ class TestAccuracyEvent:
         assert event is not None
         assert event["model"] == ""
         assert event["device"] == ""
+
+
+class FakeResponse:
+    def __init__(self, body):
+        self.body = body
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        return self.body
+
+
+class FakeSession:
+    """Serves canned Statement Execution API responses, in order."""
+
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.headers = {}
+        self.calls = []
+
+    def post(self, url, json, timeout):
+        self.calls.append(("POST", url, json))
+        return FakeResponse(self.responses.pop(0))
+
+    def get(self, url, timeout):
+        self.calls.append(("GET", url, None))
+        return FakeResponse(self.responses.pop(0))
+
+
+@pytest.fixture
+def databricks_env(monkeypatch):
+    monkeypatch.setenv("DATABRICKS_HOST", "example.cloud.databricks.com")
+    monkeypatch.setenv("DATABRICKS_WAREHOUSE_ID", "wh")
+    monkeypatch.setenv("DATABRICKS_TOKEN", "t")
+    monkeypatch.setattr(databricks_collect.time, "sleep", lambda _: None)
+
+    def serve(*responses):
+        session = FakeSession(responses)
+        monkeypatch.setattr(databricks_collect.requests, "Session", lambda: session)
+        return session
+
+    return serve
+
+
+def _succeeded(rows, total=None, next_link=None):
+    result = {"data_array": rows}
+    if next_link:
+        result["next_chunk_internal_link"] = next_link
+    return {
+        "statement_id": "s1",
+        "status": {"state": "SUCCEEDED"},
+        "manifest": {"total_row_count": len(rows) if total is None else total},
+        "result": result,
+    }
+
+
+class TestRunQuery:
+    def test_polls_until_done_then_follows_every_chunk(self, databricks_env):
+        session = databricks_env(
+            {"statement_id": "s1", "status": {"state": "RUNNING"}},
+            _succeeded([["a"]], total=2, next_link="/api/2.0/sql/statements/s1/result/chunks/1"),
+            {"data_array": [["b"]]},
+        )
+        assert run_query("SELECT 1", {}) == [["a"], ["b"]]
+        assert session.calls[0][1] == "https://example.cloud.databricks.com/api/2.0/sql/statements"
+        assert session.calls[1][1].endswith("/statements/s1")
+        assert session.calls[2][1].endswith("/chunks/1")
+
+    def test_fails_when_rows_go_missing(self, databricks_env):
+        databricks_env(_succeeded([["a"]], total=2))
+        with pytest.raises(RuntimeError, match="reported 2 rows"):
+            run_query("SELECT 1", {})
+
+    def test_fails_on_a_truncated_result(self, databricks_env):
+        body = _succeeded([["a"]])
+        body["manifest"]["truncated"] = True
+        databricks_env(body)
+        with pytest.raises(RuntimeError, match="truncated"):
+            run_query("SELECT 1", {})
+
+    def test_fails_on_a_failed_statement(self, databricks_env):
+        databricks_env(
+            {"statement_id": "s1", "status": {"state": "FAILED", "error": {"message": "boom"}}}
+        )
+        with pytest.raises(RuntimeError, match="FAILED: boom"):
+            run_query("SELECT 1", {})
+
+
+class TestFetchRows:
+    def test_rebuilds_the_selected_fields_with_their_json_types(self, databricks_env):
+        results = {"gsm8k": {"exact_match,strict-match": 0.82}}
+        session = databricks_env(
+            _succeeded([["2026-09-30T17:44:42Z", '"results"', "true", json.dumps(results)]])
+        )
+        since = databricks_collect.datetime(2026, 9, 1, tzinfo=databricks_collect.UTC)
+        rows = fetch_rows(EVAL_TABLE, since=since, fields=("kind", "nightly", "data.results"))
+        assert rows == [
+            {
+                "kind": "results",
+                "nightly": True,
+                "data": {"results": results},
+                "_ingest_timestamp": "2026-09-30T17:44:42Z",
+            }
+        ]
+        statement = session.calls[0][2]["statement"]
+        assert "message:kind::string = 'results'" in statement
+        assert statement.lstrip().upper().startswith("SELECT")

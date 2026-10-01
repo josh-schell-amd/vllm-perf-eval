@@ -240,6 +240,12 @@ def workload_entry(data: dict, checkpoint: dict | None = None) -> tuple[dict, di
                 "conc": concurrency,
             }
     parallelism = parse_parallelism(serve_args)
+    # The `tp` perf-eval stamps on a Databricks perf row (BENCH_TP in its
+    # lib/parse_workload.py): metadata.tp if set, else TP x DP. Perf rows are
+    # matched back to their recipe on it.
+    bench_tp = to_int(meta.get("tp")) or (parallelism.get("tensor_parallel_size") or 1) * (
+        parallelism.get("data_parallel_size") or 1
+    )
     # perf-eval's escape hatch for a TP that serve_args does not show.
     meta_tp = to_int(meta.get("tp"))
     if meta_tp is not None:
@@ -251,6 +257,7 @@ def workload_entry(data: dict, checkpoint: dict | None = None) -> tuple[dict, di
         "gpu": gpu,
         "device": (meta.get("device") or gpu.lower()).strip(),
         "parallelism": parallelism,
+        "bench_tp": bench_tp,
         "precision": recipe_precision(meta, serve_args, model, checkpoint),
         "model": model,
         # Only scheduled nightlies are in scope, so only they are expected.

@@ -37,8 +37,9 @@ tests/
 - Both workflows install with `uv sync --locked`, which fails if `uv.lock` is
   stale.
 - The collect workflow adds `--no-dev`, so only the runtime packages
-  (`requests`, `PyYAML`, `truststore`, `databricks-sql-connector`) run next to
-  the Databricks token.
+  (`requests`, `PyYAML`, `truststore`, `cryptography`) run next to the
+  Databricks token. Databricks is queried over its REST API with `requests`,
+  so no Databricks client package is installed.
 - Actions are pinned to commit SHAs.
 
 ## Local setup
