@@ -77,6 +77,9 @@ URL, so **Copy link** reproduces the view.
   the previous run. Faded = not in the newest nightly: the bar shows its last
   value from an older build. A card with any such bar says so at its top
   right, in orange: `4 of 4 not in #625`.
+- A config the newest build neither ran nor expected (its recipe dropped it,
+  like an old TP2 variant) is not shown here: it is retired, not missing.
+  Trends and Data still show its history.
 - Hover for the value, build, commit and change: `vs the previous run
   (2026-09-29)`, or `vs an older run (2026-09-18)` if the config skipped the
   previous run, or *No previous run*. Changes are counted by run, not by

@@ -1,14 +1,14 @@
 """Workload recipes from the public `vllm-project/perf-eval` repo.
 
-Results no longer come from Buildkite artifacts (see `databricks_collect.py`),
-but recipes are still the only source of two things results can't carry
-themselves: what the recipes say should run (the coverage card), and a
-model/device label for accuracy rows, which `vllm_eval_data_ingest` does not
-carry (see docs/data-pipeline.md).
+Results come from Databricks (see `databricks_collect.py`), but recipes are
+the only source of what results can't carry correctly themselves: what should
+run (the coverage card), a perf row's precision and parallelism, and an
+accuracy row's model/device (see docs/data-pipeline.md).
 
-Recipes are always read at `main`: there is no per-nightly Buildkite commit
-to pin to anymore, so a recipe rename or removal can affect how an older
-result is labeled. Accepted tradeoff; see docs/data-pipeline.md.
+Recipes are read at each result's build's perf-eval commit (the
+`buildkite_commit` its eval rows carry), so a result is labeled by the
+recipe that ran it, and Coverage uses the newest build's commit. `main` is
+read only for a result whose build is unknown.
 """
 
 from __future__ import annotations

@@ -415,3 +415,49 @@ class TestFetchRows:
         statement = session.calls[0][2]["statement"]
         assert "message:kind::string = 'results'" in statement
         assert statement.lstrip().upper().startswith("SELECT")
+
+
+class TestCollectPinsRecipesToEachBuild:
+    def test_results_and_coverage_use_their_builds_perf_eval_commit(self, monkeypatch):
+        old_commit = "1" * 40
+        old_image = f"vllm/vllm-openai-rocm:nightly-{old_commit}"
+        perf_rows = [
+            dict(PERF_ROW),  # build 617, perf-eval commit 086bacd...
+            {**PERF_ROW, "image": old_image, "date": "2026-09-20 10:00:00"},  # build 600
+        ]
+        eval_rows = [
+            dict(EVAL_ROW),
+            {
+                **EVAL_ROW,
+                "vllm_commit": old_commit,
+                "image": old_image,
+                "buildkite_build_number": "600",
+                "buildkite_build_url": "",
+                "buildkite_commit": "old-perf-eval",
+            },
+        ]
+        monkeypatch.setattr(
+            databricks_collect,
+            "fetch_rows",
+            lambda table, **_: perf_rows if table == databricks_collect.PERF_TABLE else eval_rows,
+        )
+        refs = []
+
+        def fake_recipes(_token, ref):
+            refs.append(ref)
+            entry, configs = RECIPES["kimi_k2_5-mi300x"]
+            precision = "bf16" if ref == "old-perf-eval" else "int4"
+            return {
+                "kimi_k2_5-mi300x": ({**entry, "precision": precision, "nightly": True}, configs)
+            }
+
+        monkeypatch.setattr(databricks_collect, "fetch_workload_map", fake_recipes)
+        events = databricks_collect.collect(days=30, gh_token="")
+
+        perf = {e["build_number"]: e for e in events if e["event"] == "perf_result"}
+        assert perf["617"]["precision"] == "int4"
+        assert perf["600"]["precision"] == "bf16"
+        assert "main" not in refs
+        expected = next(e for e in events if e["event"] == "expected_configs")
+        # Coverage from the newest build, 617, whose perf-eval commit has int4.
+        assert {c["precision"] for c in expected["configs"]} == {"int4"}

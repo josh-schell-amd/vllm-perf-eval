@@ -159,6 +159,13 @@ function configKeyOf(parts) {
   return [parts.model, parts.device, parts.precision, parts.parallel_label, parts.isl, parts.osl, parts.conc].join('|');
 }
 
+// A config the newest build neither ran nor expected: its recipe dropped it
+// (an old TP2 variant, say), so it is history, not a missing result. With
+// no expectations to judge by, nothing is retired.
+function isRetired(config, latest, expectedKeys) {
+  return expectedKeys.size > 0 && !config.nights.has(latest) && !expectedKeys.has(configKeyOf(config));
+}
+
 function lenLabel(v) {
   if (v == null) return '?';
   return v >= 1024 && v % 1024 === 0 ? (v / 1024) + 'K' : String(v);
@@ -313,6 +320,7 @@ const api = {
   REG_TIERS,
   regTier,
   configKeyOf,
+  isRetired,
   lenLabel,
   shapeLabel,
   variantLabel,

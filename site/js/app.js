@@ -25,6 +25,7 @@ const {
   REG_TIERS,
   regTier,
   configKeyOf,
+  isRetired,
   lenLabel,
   shapeLabel,
   variantLabel,
@@ -1697,7 +1698,10 @@ function commitLink(sha) {
 
 function renderPerformanceTab() {
   const host = document.getElementById('main');
-  const configs = shownConfigs();
+  // A snapshot of now: configs the newest build's recipes dropped stay in
+  // Trends as history, but have no "now" to show here.
+  const expectedKeys = new Set(DATA.expected.configs.map(configKeyOf));
+  const configs = shownConfigs().filter(c => !isRetired(c, latestNightly(), expectedKeys));
   const metric = perfMetric();
   if (!configs.length || !metric) {
     host.innerHTML = '<div class="card"><div class="empty">No AMD nightly runs match these filters.</div></div>';

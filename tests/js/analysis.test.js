@@ -11,6 +11,15 @@ const HIGHER = { better: 'higher' };
 const LOWER = { better: 'lower' };
 const point = night => ({ night: night });
 
+test('isRetired: only a config the newest build neither ran nor expected', () => {
+  const cfg = { model: 'm', device: 'mi355x', precision: 'fp8', parallel_label: 'TP2', isl: 1024, osl: 1024, conc: 1 };
+  const expected = new Set([a.configKeyOf({ ...cfg, parallel_label: 'TP4' })]);
+  assert.equal(a.isRetired({ ...cfg, nights: new Set(['old']) }, 'new', expected), true);
+  assert.equal(a.isRetired({ ...cfg, nights: new Set(['old', 'new']) }, 'new', expected), false);
+  assert.equal(a.isRetired({ ...cfg, parallel_label: 'TP4', nights: new Set(['old']) }, 'new', expected), false);
+  assert.equal(a.isRetired({ ...cfg, nights: new Set(['old']) }, 'new', new Set()), false);
+});
+
 test('esc neutralises every character that can break out of markup', () => {
   assert.equal(a.esc(`<a href="x" onclick='y'>&</a>`),
     '&lt;a href=&quot;x&quot; onclick=&#39;y&#39;&gt;&amp;&lt;/a&gt;');

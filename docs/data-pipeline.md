@@ -55,10 +55,15 @@ Workload recipes are still read from the public `vllm-project/perf-eval`
 repo, for three things the Databricks rows don't carry correctly: the
 `expected_configs`/`expected_accuracy` snapshot behind the Coverage card, the
 precision and parallelism of perf rows, and a `model`/`device` label for
-accuracy rows (see [Data identity](#data-identity)). Recipes are always read at
-`main` — there is no per-nightly perf-eval commit to pin to anymore, so a
-recipe rename or removal can change how an older result is labeled. Accepted
-tradeoff, in keeping with the rest of this design: see below.
+accuracy rows (see [Data identity](#data-identity)).
+
+Recipes are read at each result's build's perf-eval commit (the
+`buildkite_commit` its eval rows carry), so a result is labeled by the
+recipe that ran it, and Coverage uses the newest build's commit. `main` is
+read only for a result whose build is unknown. This is what the old Buildkite collector did: a config a
+later recipe dropped (an old TP2 run, say) keeps its real label, and is not
+counted missing from a build whose recipe no longer had it. One archive
+download per distinct commit.
 
 ## Where the data lives
 
@@ -168,13 +173,9 @@ nightly is missing, split into two, or mislabeled.
     only matters once a recipe uses PP or PCP.
 - **Accuracy rows have no `model`/`device` field at all** — `lib/ingest.py`
   never stamps them. Both are recovered by joining the row's `workload` name
-  against the recipe map fetched at `main`
-  (`databricks_collect.py:accuracy_event`). A workload later renamed or
-  removed from `main` means older rows under the old name can't be labeled
-  anymore (same "recipe drifted from what actually ran" tradeoff as the
-  day-bucket identity above), but the AMD/nightly scope check still passes
-  via the workload stem or image, so the row isn't silently dropped, only
-  unlabeled.
+  against the recipes at the row's own `buildkite_commit`
+  (`databricks_collect.py:accuracy_event`), so a workload later renamed or
+  removed still labels its older rows.
 - **Accuracy rows do carry real Buildkite identity** (`buildkite_build_number`,
   `buildkite_build_url`, `buildkite_branch`, `buildkite_commit`, `vllm_commit`)
   because `lib/ingest.py` stamps it directly. That is what names the build of

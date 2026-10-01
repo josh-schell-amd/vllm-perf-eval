@@ -25,7 +25,8 @@ instead (``recipe_labels``), the same derivation the coverage card's
 expected configs use, so results and expectations agree.
 ``vllm_eval_data_ingest`` rows carry real Buildkite identity but no
 ``model``/``device``; those are recovered from the workload recipe too.
-Recipes are read at ``main``.
+Recipes are read at the perf-eval commit each result's build ran, from
+``buildkite_builds``; ``main`` only when the build is unknown.
 
 Queries go through the SQL Statement Execution REST API, not
 databricks-sql-connector: one documented HTTP call, no Thrift client in the
@@ -80,8 +81,7 @@ DEFAULT_OUTPUT = ROOT / "data" / "events.jsonl"
 PERF_TABLE = "vllm_perf_data_ingest"
 EVAL_TABLE = "vllm_eval_data_ingest"
 
-# Recipes are always read at main: there is no per-nightly Buildkite commit
-# to pin to anymore (see recipes.py's module docstring).
+# Read only for a result whose build, and so perf-eval commit, is unknown.
 RECIPE_REF = "main"
 
 # Both observed image-tag conventions end in a bare hex commit run:
@@ -471,20 +471,38 @@ def collect(*, days: int, gh_token: str, dry_run: bool = False) -> list[dict]:
         since.isoformat(),
     )
 
-    recipes = fetch_workload_map(gh_token, ref=RECIPE_REF)
+    # Each result is labeled by the recipes its build ran: the perf-eval
+    # commit of that build, known from its eval rows. RECIPE_REF only when a
+    # result's build is unknown.
+    builds = buildkite_builds(eval_rows)
+    recipes_at: dict[str, dict[str, tuple[dict, dict]]] = {}
+    labels_at: dict[str, dict[tuple, tuple[str, dict]]] = {}
 
-    labels = recipe_labels(recipes)
+    def recipes_for(ref: str) -> dict[str, tuple[dict, dict]]:
+        if ref not in recipes_at:
+            recipes_at[ref] = fetch_workload_map(gh_token, ref=ref)
+            labels_at[ref] = recipe_labels(recipes_at[ref])
+        return recipes_at[ref]
+
+    def ref_for(vllm_commit: str) -> str:
+        build = builds.get(vllm_commit) or {}
+        return build.get("build_commit") or RECIPE_REF
+
     drops: Counter = Counter()
     events: list[dict] = []
     for row in perf_rows:
-        event = perf_event(row, labels=labels, drops=drops)
+        ref = ref_for(commit_from_image(str(row.get("image") or "")))
+        recipes_for(ref)
+        event = perf_event(row, labels=labels_at[ref], drops=drops)
         if event is not None:
             events.append(event)
     for row in eval_rows:
-        event = accuracy_event(row, recipes=recipes, drops=drops)
+        ref = str(row.get("buildkite_commit") or "").strip() or ref_for(
+            str(row.get("vllm_commit") or "").strip()
+        )
+        event = accuracy_event(row, recipes=recipes_for(ref), drops=drops)
         if event is not None:
             events.append(event)
-    builds = buildkite_builds(eval_rows)
     named = 0
     for event in events:
         build = builds.get(event.get("vllm_commit") or "")
@@ -503,6 +521,20 @@ def collect(*, days: int, gh_token: str, dry_run: bool = False) -> list[dict]:
         len(builds),
     )
 
+    # Coverage judges the newest build against the recipes it ran, so a recipe
+    # edited on main afterwards does not count as configs it skipped.
+    newest = max(
+        (b for b in builds.values() if b["build_number"].isdigit()),
+        key=lambda b: int(b["build_number"]),
+        default=None,
+    )
+    expected_ref = (newest or {}).get("build_commit") or RECIPE_REF
+    recipes = recipes_for(expected_ref)
+    log.info(
+        "Recipes read at %d perf-eval refs; Coverage from %s",
+        len(recipes_at),
+        f"build #{newest['build_number']}'s commit" if newest else RECIPE_REF,
+    )
     expected = expected_configs(recipes)
     if expected:
         events.append(
