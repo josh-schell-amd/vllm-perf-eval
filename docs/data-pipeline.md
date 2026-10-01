@@ -131,6 +131,13 @@ nightly is missing, split into two, or mislabeled.
   out of the image tag for perf rows (real, straight off the row, for
   accuracy rows), still folds two rows from the same day and commit into one
   nightly if collected separately.
+- **The build shown is the real Buildkite build where it can be found.**
+  Perf rows carry no build, but eval rows do, and a nightly's perf and eval
+  jobs share one image. `buildkite_builds` maps each vLLM commit to the one
+  build whose eval rows ran it, and every result with that commit takes its
+  build number, URL, commit and branch. A commit with no eval row, or one
+  that two builds ran, keeps the day as its build (`#2026-10-01`). The run log
+  counts how many results were named each way.
 - **There is no "nightly failed" or "still running" visibility.** The old
   collector polled Buildkite's builds API to know about a nightly that ran
   but produced no AMD results, or is still going. Nothing here does that

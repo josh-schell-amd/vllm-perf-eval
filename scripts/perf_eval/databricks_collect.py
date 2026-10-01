@@ -432,6 +432,29 @@ def fetch_rows(table: str, *, since: datetime, fields: tuple[str, ...] | None = 
 # ---------------------------------------------------------------------------
 
 
+def buildkite_builds(eval_rows: list[dict]) -> dict[str, dict]:
+    """The perf-eval Buildkite build that ran each vLLM commit, from eval rows.
+
+    Perf rows carry no build, but a nightly's perf and eval jobs share one
+    image, so its commit names the build. A commit two builds ran (a retry)
+    is left out; its results keep the day as their build.
+    """
+    found: dict[str, dict[str, dict]] = {}
+    for row in eval_rows:
+        commit = str(row.get("vllm_commit") or "").strip()
+        number = str(row.get("buildkite_build_number") or "").strip()
+        if not commit or not number or not is_nightly_row(row):
+            continue
+        found.setdefault(commit, {})[number] = {
+            "build_number": number,
+            "build_url": str(row.get("buildkite_build_url") or "").strip()
+            or f"https://buildkite.com/vllm/perf-eval/builds/{number}",
+            "build_commit": str(row.get("buildkite_commit") or "").strip(),
+            "branch": str(row.get("buildkite_branch") or "").strip(),
+        }
+    return {commit: next(iter(by.values())) for commit, by in found.items() if len(by) == 1}
+
+
 def collect(*, days: int, gh_token: str, dry_run: bool = False) -> list[dict]:
     if not 1 <= days <= WINDOW_DAYS:
         raise ValueError(f"perf-eval lookback must be between 1 and {WINDOW_DAYS} days")
@@ -461,13 +484,23 @@ def collect(*, days: int, gh_token: str, dry_run: bool = False) -> list[dict]:
         event = accuracy_event(row, recipes=recipes, drops=drops)
         if event is not None:
             events.append(event)
+    builds = buildkite_builds(eval_rows)
+    named = 0
+    for event in events:
+        build = builds.get(event.get("vllm_commit") or "")
+        if build:
+            event.update(build)
+            named += 1
     # Counts only: this log is public.
     for reason, count in sorted(drops.items()):
         log.info("%s: %d rows", reason, count)
     log.info(
-        "Kept %d perf_result and %d accuracy_result events",
+        "Kept %d perf_result and %d accuracy_result events; %d named by Buildkite build "
+        "(%d commits), the rest by day",
         sum(1 for e in events if e["event"] == "perf_result"),
         sum(1 for e in events if e["event"] == "accuracy_result"),
+        named,
+        len(builds),
     )
 
     expected = expected_configs(recipes)

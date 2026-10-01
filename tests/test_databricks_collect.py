@@ -15,6 +15,7 @@ from perf_eval import databricks_collect
 from perf_eval.databricks_collect import (
     EVAL_TABLE,
     accuracy_event,
+    buildkite_builds,
     commit_from_image,
     day_bucket,
     fetch_rows,
@@ -237,6 +238,26 @@ class TestRecipeLabels:
             {"a": (entry, configs), "b": ({**entry, "precision": "fp8"}, configs)}
         )
         assert labels == {}
+
+
+class TestBuildkiteBuilds:
+    def test_a_commit_names_the_build_that_ran_it(self):
+        builds = buildkite_builds([EVAL_ROW])
+        assert builds == {
+            "ac68c3087215e0a4f3cdfa218508c6aada57235d": {
+                "build_number": "617",
+                "build_url": "https://buildkite.com/vllm/perf-eval/builds/617",
+                "build_commit": "086bacd132e4f04fa112df5610bfae2db01ba5cd",
+                "branch": "main",
+            }
+        }
+
+    def test_a_commit_two_builds_ran_is_left_out(self):
+        retry = {**EVAL_ROW, "buildkite_build_number": "618", "buildkite_build_url": ""}
+        assert buildkite_builds([EVAL_ROW, retry]) == {}
+
+    def test_non_nightly_rows_name_nothing(self):
+        assert buildkite_builds([{**EVAL_ROW, "nightly": False}]) == {}
 
 
 class TestAccuracyEvent:
