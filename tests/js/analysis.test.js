@@ -165,49 +165,6 @@ test('accuracy changes read in points, signed on request', () => {
   assert.equal(a.accuracyPercent(0.9575), '95.75%');
 });
 
-// nightly_runs, newest first, as the payload publishes them.
-const run = (build, day, results, state = 'failed') =>
-  ({ build: String(build), nightly_date: day, state: state, amd_results: results });
-const collectedAt = Date.parse('2026-09-28T17:17:00Z');
-const latest601 = { build: '601', day: '2026-09-25' };
-const gapsOf = s => s.gaps.map(g => [g.day, g.runs.map(r => r.build)]);
-
-test('each later day is a gap: nightlies with no AMD results, or none at all', () => {
-  const runs = [run(602, '2026-09-26', 0), run(601, '2026-09-25', 52)];
-  const s = a.nightlyStatus(runs, latest601, collectedAt);
-  assert.equal(s.known, true);
-  // 09-27 was due by 16:00 UTC on 09-28 and nothing ran; 09-28 is not due yet.
-  assert.deepEqual(gapsOf(s), [['2026-09-27', []], ['2026-09-26', ['602']]]);
-});
-
-test('a nightly still inside its usual finishing time is not a gap', () => {
-  const runs = [run(601, '2026-09-25', 52)];
-  assert.deepEqual(a.nightlyStatus(runs, latest601, Date.parse('2026-09-26T15:00:00Z')).gaps, []);
-});
-
-test('an empty nightly that finished early is a gap before it is due', () => {
-  const runs = [run(603, '2026-09-26', 0), run(601, '2026-09-25', 52)];
-  const early = Date.parse('2026-09-27T10:00:00Z');
-  assert.deepEqual(gapsOf(a.nightlyStatus(runs, latest601, early)), [['2026-09-26', ['603']]]);
-});
-
-test('an up-to-date dashboard has no gaps', () => {
-  const runs = [run(605, '2026-09-27', 50), run(601, '2026-09-25', 52)];
-  assert.deepEqual(a.nightlyStatus(runs, { build: '605', day: '2026-09-27' }, collectedAt).gaps, []);
-});
-
-test('with no runs recorded, no gaps are guessed: there is no signal to guess from', () => {
-  const s = a.nightlyStatus([], latest601, collectedAt);
-  assert.equal(s.known, false);
-  assert.deepEqual(gapsOf(s), []);
-});
-
-test('a newer empty build on the latest day is a rebuild, not a gap', () => {
-  const runs = [run(602, '2026-09-25', 0, 'canceled'), run(601, '2026-09-25', 52)];
-  const s = a.nightlyStatus(runs, latest601, Date.parse('2026-09-26T15:00:00Z'));
-  assert.deepEqual(gapsOf(s), []);
-});
-
 test('each nightly of a config is one row, with its value on every metric', () => {
   const config = {
     metrics: {
@@ -245,26 +202,3 @@ test('CSV leaves negative numbers alone', () => {
   assert.equal(a.toCsv([[-0.5]]), '-0.5\n');
 });
 
-test('a nightly still running is not a gap, and says what it waits on', () => {
-  const running = { ...run(606, '2026-09-29', 0, 'running'), amd_pending: ['kimi_k2_5_mi300x'] };
-  const s = a.nightlyStatus([running, run(605, '2026-09-28', 39)],
-    { build: '605', day: '2026-09-28' }, Date.parse('2026-09-30T17:17:00Z'));
-  assert.deepEqual(gapsOf(s), []);
-  assert.deepEqual(s.running.map(r => r.build), ['606']);
-});
-
-test('a failing build is still going too; a failed one is a gap', () => {
-  const at = Date.parse('2026-09-30T17:17:00Z');
-  const latest = { build: '605', day: '2026-09-28' };
-  const failing = a.nightlyStatus([run(606, '2026-09-29', 0, 'failing')], latest, at);
-  assert.deepEqual(gapsOf(failing), []);
-  const failed = a.nightlyStatus([run(606, '2026-09-29', 0, 'failed')], latest, at);
-  assert.deepEqual(gapsOf(failed), [['2026-09-29', ['606']]]);
-});
-
-test('only a build still going counts as running', () => {
-  assert.equal(a.isOngoing({ state: 'running' }), true);
-  assert.equal(a.isOngoing({ state: 'failing' }), true);
-  assert.equal(a.isOngoing({ state: 'failed' }), false);
-  assert.equal(a.isOngoing({ state: 'passed' }), false);
-});

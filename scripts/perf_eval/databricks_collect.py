@@ -1,36 +1,10 @@
 #!/usr/bin/env python3
 """Collect AMD nightly perf-eval results from Databricks into an event file.
 
-Scope: AMD workloads (``is_amd_workload``), nightly rows only (``nightly``
-field, stamped by the ingest scripts in the sibling ``perf-eval`` repo).
-
-Both source tables (``vllm_perf_data_ingest``, ``vllm_eval_data_ingest``) are
-Zerobus event logs with two VARIANT columns: ``message`` (the JSON body the
-ingest script POSTed) and ``request_metadata`` (HTTP request info, including
-an ingest ``timestamp``). Every row's real fields live inside ``message``.
-
-Unlike the old Buildkite-artifact collector, there is no local event store:
-Databricks already retains full history, so every run queries it fresh and
-rebuilds the payload from scratch. There is no Buildkite build number on
-these rows either, so identity is a calendar-day bucket of each row's own
-ingest timestamp instead — a nightly retried on a different day is not
-folded back into the original one. See docs/data-pipeline.md.
-
-``vllm_perf_data_ingest`` rows carry per-GPU metrics pre-converted to
-seconds, which are used as they are. Their ``precision`` and ``tp`` are not:
-perf-eval stamps ``precision`` from a model-name marker, falling back to
-``bf16`` (so an int4 or fp8 checkpoint with no marker reads ``bf16``), and
-``tp`` is TP x DP as one number. Both come from the matching workload recipe
-instead (``recipe_labels``), the same derivation the coverage card's
-expected configs use, so results and expectations agree.
-``vllm_eval_data_ingest`` rows carry real Buildkite identity but no
-``model``/``device``; those are recovered from the workload recipe too.
-Recipes are read at the perf-eval commit each result's build ran, from
-``buildkite_builds``; ``main`` only when the build is unknown.
-
-Queries go through the SQL Statement Execution REST API, not
-databricks-sql-connector: one documented HTTP call, no Thrift client in the
-job that holds the token (connector 4.6's Thrift paging also lost rows).
+Scope: AMD, nightly rows only. Read-only, and fresh every run: Databricks
+keeps the history. Precision, parallelism and model/device come from the
+workload recipes, because the rows' own are missing or a guess. See
+docs/data-pipeline.md.
 """
 
 from __future__ import annotations
@@ -56,10 +30,10 @@ from perf_eval.events import (  # noqa: E402
     write_events_atomic,
 )
 from perf_eval.normalize import (  # noqa: E402
+    accuracy_rows,
     is_amd_workload,
     parallel_key,
     perf_metrics,
-    score_rows,
     to_int,
     utcnow_iso,
 )
@@ -84,9 +58,7 @@ EVAL_TABLE = "vllm_eval_data_ingest"
 # Read only for a result whose build, and so perf-eval commit, is unknown.
 RECIPE_REF = "main"
 
-# Both observed image-tag conventions end in a bare hex commit run:
-#   public.ecr.aws/.../vllm-release-repo:<sha>-x86_64
-#   vllm/vllm-openai-rocm:nightly-<sha>
+# "...:nightly-<sha>" and "...:<sha>-x86_64" both carry the commit.
 _COMMIT_RE = re.compile(r"[0-9a-f]{7,40}", re.IGNORECASE)
 
 
@@ -97,31 +69,17 @@ def commit_from_image(image: str) -> str:
 
 
 def is_nightly_row(row: dict) -> bool:
-    """Whether a Databricks row is from a scheduled nightly, not an ad-hoc run.
-
-    The ingest scripts in the sibling ``perf-eval`` repo stamp ``nightly: true``
-    only when ``NIGHTLY=1`` was set on the build; a missing or falsy value
-    (including any non-boolean JSON value) means an ad-hoc run.
-    """
+    """perf-eval stamps ``nightly: true`` only on scheduled nightlies."""
     return row.get("nightly") is True
 
 
 def day_bucket(timestamp: str) -> str:
-    """The calendar-day identity key (``YYYY-MM-DD``) from an ISO-ish
-    timestamp. Both tables' timestamps (``2026-09-30 17:44:42`` and
-    ``2026-09-30T17:44:42.255335868Z``) start with the date, so a slice is
-    enough — no timezone conversion, since both are already UTC."""
+    """``YYYY-MM-DD`` from either table's UTC timestamp, which both start with."""
     return str(timestamp or "").strip()[:10]
 
 
 def perf_parallelism(row: dict) -> dict:
-    """A parallelism dict from the row's own scalars, not a recipe join.
-
-    ``tp`` here is TP x DP as a single int (see ``lib/ingest_perf.py`` in the
-    sibling repo), not vLLM's individual flags, so this cannot distinguish a
-    recipe using pipeline or prefill-context parallelism from one that
-    doesn't; accepted gap, see docs/data-pipeline.md.
-    """
+    """From the row's own scalars, for a row no recipe matches. Its ``tp`` is TP x DP."""
     parallelism: dict = {}
     tp = to_int(row.get("tp")) or 1
     if tp > 1:
@@ -146,12 +104,8 @@ def _recipe_shape(model, device, isl, osl, conc, tp) -> tuple:
 
 
 def recipe_labels(recipes: dict[str, tuple[dict, dict]]) -> dict[tuple, tuple[str, dict]]:
-    """(precision, parallelism) per recipe config, keyed on what a perf row
-    carries: model, device, ISL/OSL, concurrency and perf-eval's ``tp``.
-
-    A shape two recipes share with different labels is left out, so its rows
-    keep the row's own TP and an unstated precision rather than a guess.
-    """
+    """(precision, parallelism) per recipe config, keyed on what a perf row carries.
+    A shape two recipes label differently is left out rather than guessed."""
     found: dict[tuple, set] = {}
     labels: dict[tuple, tuple[str, dict]] = {}
     for entry, configs in recipes.values():
@@ -173,9 +127,7 @@ def recipe_labels(recipes: dict[str, tuple[dict, dict]]) -> dict[tuple, tuple[st
 def perf_event(
     row: dict, *, labels: dict[tuple, tuple[str, dict]], drops: Counter | None = None
 ) -> dict | None:
-    """A canonical ``perf_result`` event from a ``vllm_perf_data_ingest`` row,
-    labeled from its recipe (``recipe_labels``). ``drops`` counts why rows
-    were left out, for the run log."""
+    """A ``perf_result`` event, or None; ``drops`` counts why, for the run log."""
     drops = drops if drops is not None else Counter()
     if not is_nightly_row(row):
         drops["perf: not nightly"] += 1
@@ -220,8 +172,6 @@ def perf_event(
         "branch": "",
         "image": image,
         "vllm_commit": commit_from_image(image),
-        "completed_requests": None,
-        "failed_requests": None,
         "metrics": metrics,
     }
 
@@ -229,12 +179,8 @@ def perf_event(
 def accuracy_event(
     row: dict, *, recipes: dict[str, tuple[dict, dict]], drops: Counter | None = None
 ) -> dict | None:
-    """A canonical ``accuracy_result`` event from a ``vllm_eval_data_ingest`` row.
-
-    ``vllm_eval_data_ingest`` rows carry real Buildkite identity but no
-    ``model``/``device``; both are recovered from the workload recipe.
-    ``drops`` counts why rows were left out, for the run log.
-    """
+    """An ``accuracy_result`` event, or None; ``drops`` counts why, for the run log.
+    Eval rows have no model or device, so both come from the recipe."""
     drops = drops if drops is not None else Counter()
     if row.get("kind") != "results":
         drops["eval: not a results row"] += 1
@@ -254,15 +200,7 @@ def accuracy_event(
     if not is_amd_workload(workload=workload, image=image, device=device):
         drops["eval: not AMD"] += 1
         return None
-    rows = score_rows(
-        [
-            {"task": task_name, "metric": metric, "value": value}
-            for task_name, metrics in ((row.get("data") or {}).get("results") or {}).items()
-            if isinstance(metrics, dict)
-            for metric, value in metrics.items()
-            if isinstance(value, (int, float)) and not isinstance(value, bool)
-        ]
-    )
+    rows = accuracy_rows(row)
     if not rows:
         drops["eval: no scores"] += 1
         return None
@@ -302,8 +240,7 @@ HTTP_TIMEOUT = 60
 QUERY_TIMEOUT = 600
 POLL_SECONDS = 5
 
-# Eval "results" rows carry lm-eval's whole output (configs, per-task
-# settings); only these fields are read, so only these are fetched.
+# Eval rows carry lm-eval's whole output; fetch only what is read.
 EVAL_FIELDS = (
     "kind",
     "nightly",
@@ -326,11 +263,7 @@ def _base_url() -> str:
 
 
 def run_query(statement: str, parameters: dict[str, str]) -> list[list]:
-    """Every row of a read-only statement, via the SQL Statement Execution API.
-
-    Waits for the statement, then follows every result chunk, and fails if
-    the rows received are not all the rows the manifest reports.
-    """
+    """Every row of a read-only statement; fails rather than return a partial result."""
     session = requests.Session()
     session.headers["Authorization"] = f"Bearer {os.environ['DATABRICKS_TOKEN']}"
     base = _base_url()
@@ -379,19 +312,12 @@ def run_query(statement: str, parameters: dict[str, str]) -> list[list]:
 
 
 def fetch_rows(table: str, *, since: datetime, fields: tuple[str, ...] | None = None) -> list[dict]:
-    """Nightly rows' ``message`` since ``since``, with the ingest
-    ``timestamp`` as ``_ingest_timestamp``. ``fields`` (dotted paths) limits
-    the message to those fields; ``None`` fetches all of it.
-
-    Values come back through ``to_json``, so each is the exact JSON the ingest
-    script sent: the strict client-side checks (``is_nightly_row``) still see
-    a boolean ``true`` apart from a string ``"true"``. VARIANT paths need a
-    ``::`` cast to be compared (``DATATYPE_MISMATCH`` otherwise).
-    """
+    """Nightly rows' ``message`` (or just ``fields``, as dotted paths), with the
+    ingest time as ``_ingest_timestamp``. ``to_json`` keeps each value's JSON
+    type, so ``is_nightly_row`` can still tell ``true`` from ``"true"``."""
     cutoff = since.strftime("%Y-%m-%dT%H:%M:%S")
     columns = ["to_json(message)"] if fields is None else [f"to_json(message:{f})" for f in fields]
-    # Nightly rows only, server-side, so less is transferred; an eval
-    # table's per-question "samples" rows are dropped there too.
+    # Filtered server-side too, so per-question "samples" rows never transfer.
     where = [
         "request_metadata:timestamp::string >= :cutoff",
         "try_cast(message:nightly AS BOOLEAN)",
@@ -433,12 +359,8 @@ def fetch_rows(table: str, *, since: datetime, fields: tuple[str, ...] | None = 
 
 
 def buildkite_builds(eval_rows: list[dict]) -> dict[str, dict]:
-    """The perf-eval Buildkite build that ran each vLLM commit, from eval rows.
-
-    Perf rows carry no build, but a nightly's perf and eval jobs share one
-    image, so its commit names the build. A commit two builds ran (a retry)
-    is left out; its results keep the day as their build.
-    """
+    """The build that ran each vLLM commit, from eval rows: perf rows carry no
+    build, but share their nightly's image. A commit two builds ran is left out."""
     found: dict[str, dict[str, dict]] = {}
     for row in eval_rows:
         commit = str(row.get("vllm_commit") or "").strip()
@@ -471,9 +393,7 @@ def collect(*, days: int, gh_token: str, dry_run: bool = False) -> list[dict]:
         since.isoformat(),
     )
 
-    # Each result is labeled by the recipes its build ran: the perf-eval
-    # commit of that build, known from its eval rows. RECIPE_REF only when a
-    # result's build is unknown.
+    # Label each result by the recipes its own build ran.
     builds = buildkite_builds(eval_rows)
     recipes_at: dict[str, dict[str, tuple[dict, dict]]] = {}
     labels_at: dict[str, dict[tuple, tuple[str, dict]]] = {}
@@ -521,8 +441,7 @@ def collect(*, days: int, gh_token: str, dry_run: bool = False) -> list[dict]:
         len(builds),
     )
 
-    # Coverage judges the newest build against the recipes it ran, so a recipe
-    # edited on main afterwards does not count as configs it skipped.
+    # Coverage judges the newest build by the recipes it ran, not today's main.
     newest = max(
         (b for b in builds.values() if b["build_number"].isdigit()),
         key=lambda b: int(b["build_number"]),
@@ -547,19 +466,8 @@ def collect(*, days: int, gh_token: str, dry_run: bool = False) -> list[dict]:
         )
 
     if dry_run:
-        log.info(
-            "DRY RUN — nothing written.\n"
-            "  perf rows fetched ........ %d\n"
-            "  eval rows fetched ........ %d\n"
-            "  perf_result events ....... %d\n"
-            "  accuracy_result events ... %d",
-            len(perf_rows),
-            len(eval_rows),
-            sum(1 for e in events if e["event"] == "perf_result"),
-            sum(1 for e in events if e["event"] == "accuracy_result"),
-        )
+        log.info("Dry run: nothing written")
         return []
-
     return events
 
 

@@ -1,14 +1,6 @@
-"""Workload recipes from the public `vllm-project/perf-eval` repo.
-
-Results come from Databricks (see `databricks_collect.py`), but recipes are
-the only source of what results can't carry correctly themselves: what should
-run (the coverage card), a perf row's precision and parallelism, and an
-accuracy row's model/device (see docs/data-pipeline.md).
-
-Recipes are read at each result's build's perf-eval commit (the
-`buildkite_commit` its eval rows carry), so a result is labeled by the
-recipe that ran it, and Coverage uses the newest build's commit. `main` is
-read only for a result whose build is unknown.
+"""Workload recipes from the public `vllm-project/perf-eval` repo, read at
+each result's build's commit: what should run (Coverage), perf precision and
+parallelism, and accuracy model/device. See docs/data-pipeline.md.
 """
 
 from __future__ import annotations
@@ -22,7 +14,7 @@ from pathlib import PurePosixPath
 import requests
 
 from perf_eval import WORKLOAD_REPO
-from perf_eval.normalize import is_amd_workload, parallelism_of, to_int
+from perf_eval.normalize import is_amd_workload, to_int
 
 log = logging.getLogger(__name__)
 
@@ -240,9 +232,7 @@ def workload_entry(data: dict, checkpoint: dict | None = None) -> tuple[dict, di
                 "conc": concurrency,
             }
     parallelism = parse_parallelism(serve_args)
-    # The `tp` perf-eval stamps on a Databricks perf row (BENCH_TP in its
-    # lib/parse_workload.py): metadata.tp if set, else TP x DP. Perf rows are
-    # matched back to their recipe on it.
+    # The `tp` perf-eval stamps on a perf row (its BENCH_TP), to match rows back.
     bench_tp = to_int(meta.get("tp")) or (parallelism.get("tensor_parallel_size") or 1) * (
         parallelism.get("data_parallel_size") or 1
     )
@@ -308,7 +298,7 @@ def expected_configs(workloads: dict[str, tuple[dict, dict]]) -> list[dict]:
                     "model": entry.get("model") or "",
                     "device": entry.get("device") or "",
                     "precision": entry.get("precision") or "",
-                    "parallelism": parallelism_of(entry),
+                    "parallelism": entry.get("parallelism") or {},
                     "isl": config.get("isl"),
                     "osl": config.get("osl"),
                     "conc": config.get("conc"),

@@ -1,11 +1,5 @@
-"""Shared event helpers: timestamps, nightly identity, and JSONL I/O.
-
-Events are canonical `perf_result`/`accuracy_result`/`expected_configs` dicts
-built by `databricks_collect.py`. This module has no knowledge of where they
-came from, and holds no store of its own: `databricks_collect.py` queries
-Databricks fresh on every run (it already retains full history) and writes
-one JSONL file for `aggregate.py` to read, not a persisted, compacted log.
-"""
+"""Event timestamps, nightly identity, and the JSONL file the collector
+writes for `aggregate.py` within one run."""
 
 from __future__ import annotations
 
@@ -17,11 +11,6 @@ from pathlib import Path
 
 RESULT_EVENTS = frozenset({"perf_result", "accuracy_result"})
 EXPECTED_CONFIGS_EVENT = "expected_configs"
-# Kept so `aggregate.py`'s schema is unchanged; never emitted now; see
-# docs/data-pipeline.md for why a nightly that failed before producing any
-# result is no longer visible (there is no Buildkite build feed to source it
-# from).
-NIGHTLY_RUN_EVENT = "nightly_run"
 
 
 # ---------------------------------------------------------------------------
@@ -52,24 +41,13 @@ def received_at(event: dict) -> datetime | None:
     return parse_time(event.get("received_at"))
 
 
-def iso(value: datetime) -> str:
-    return value.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
 # ---------------------------------------------------------------------------
 # Nightly identity
 # ---------------------------------------------------------------------------
 
 
 def nightly_identity(event: dict) -> str:
-    """The nightly a result belongs to.
-
-    `nightly_date` and `build_number` are both the calendar-day bucket of the
-    row's own ingest timestamp (there is no Buildkite build to key on
-    anymore; see docs/data-pipeline.md), so this mostly reduces to "the day".
-    `vllm_commit` is still folded in so two rows from the same day and the
-    same commit collapse into one nightly even if collected separately.
-    """
+    """Day and vLLM commit, so a nightly's perf and accuracy results share it."""
     day = str(event.get("nightly_date") or "").strip()
     commit = str(event.get("vllm_commit") or "").strip()
     if day or commit:
@@ -114,8 +92,7 @@ def _write_atomic(path: Path, data: bytes) -> None:
 
 
 def write_events_atomic(path: Path, events: list[dict]) -> int:
-    """Replace `path` with exactly these events (no compaction: the caller
-    already queried exactly the window it wants). Returns how many."""
+    """Replace `path` with these events; returns how many."""
     _write_atomic(path, encoded_events(events))
     return len(events)
 

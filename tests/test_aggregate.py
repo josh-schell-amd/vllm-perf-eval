@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from conftest import accuracy_result, days_ago, perf_result, received_days_ago
+from conftest import accuracy_result, days_ago, perf_result
 from perf_eval import aggregate as agg
 
 
@@ -181,56 +181,6 @@ class TestGrouping:
         event["tp"] = 8
         return event
 
-    def test_an_event_with_only_tp_joins_its_series(self):
-        old = self._legacy(commit="a" * 40, date=days_ago(2), value=50.0)
-        new = perf_result(commit="b" * 40, date=days_ago(1), value=60.0)
-        model = _only_model(agg.aggregate([old, new]))
-        assert [len(c["metrics"]["tput_per_gpu"]["series"]) for c in model["perf_configs"]] == [2]
-
-    def test_an_event_with_only_tp_takes_its_recipes_expert_parallelism(self):
-        # Otherwise an EP recipe's older nightlies sit on a line of their own.
-        ep = {"tensor_parallel_size": 8, "enable_expert_parallel": True}
-        snapshot = {
-            "event": "expected_configs",
-            "received_at": received_days_ago(0),
-            "configs": [
-                {
-                    "model": "meta-llama/Test-8B",
-                    "device": "mi355x",
-                    "precision": "fp8",
-                    "parallelism": ep,
-                    "isl": 1024,
-                    "osl": 1024,
-                    "conc": 128,
-                }
-            ],
-        }
-        old = self._legacy(commit="a" * 40, date=days_ago(2), value=50.0)
-        new = perf_result(commit="b" * 40, date=days_ago(1), value=60.0, parallelism=ep)
-        model = _only_model(agg.aggregate([snapshot, old, new]))
-        assert [
-            (c["parallel_label"], len(c["metrics"]["tput_per_gpu"]["series"]))
-            for c in model["perf_configs"]
-        ] == [("TP8 · EP", 2)]
-
-    def test_a_shape_two_recipes_share_is_not_guessed(self):
-        shared = {"model": "meta-llama/Test-8B", "device": "mi355x", "precision": "fp8"}
-        shape = {"isl": 1024, "osl": 1024, "conc": 128}
-        snapshot = {
-            "event": "expected_configs",
-            "received_at": received_days_ago(0),
-            "configs": [
-                {**shared, **shape, "parallelism": {"tensor_parallel_size": 8}},
-                {
-                    **shared,
-                    **shape,
-                    "parallelism": {"tensor_parallel_size": 8, "enable_expert_parallel": True},
-                },
-            ],
-        }
-        model = _only_model(agg.aggregate([snapshot, self._legacy()]))
-        assert [c["parallel_label"] for c in model["perf_configs"]] == ["TP8"]
-
     def test_config_label_abbreviates_power_of_two_lengths(self):
         events = [perf_result(isl=8192, osl=1024, conc=128, device="mi355x")]
         model = _only_model(agg.aggregate(events))
@@ -247,7 +197,7 @@ class TestGrouping:
     def test_each_point_names_a_build_whose_provenance_is_listed_once(self):
         payload = agg.aggregate([perf_result()])
         point = _metric(payload)["series"][0]
-        assert set(point) == {"build", "value", "completed_requests", "failed_requests"}
+        assert set(point) == {"build", "value"}
         build = payload["builds"][point["build"]]
         for field in ("date", "nightly_date", "vllm_commit", "build_commit", "image", "build_url"):
             assert field in build
@@ -260,12 +210,6 @@ class TestGrouping:
         ]
         payload = agg.aggregate(events)
         assert list(payload["builds"]) == [_metric(payload)["series"][0]["build"]]
-
-    def test_failed_requests_are_kept_on_every_series_point(self):
-        event = perf_result()
-        event.update(completed_requests=500.0, failed_requests=12.0)
-        point = _metric(agg.aggregate([event]))["series"][0]
-        assert (point["completed_requests"], point["failed_requests"]) == (500.0, 12.0)
 
     def test_summary_counts_points_and_nightlies(self):
         events = [
@@ -300,14 +244,6 @@ class TestAccuracyGrouping:
             ("mi300x", 0.92),
             ("mi355x", 0.94),
         ]
-
-    def test_sample_len_is_not_a_score(self):
-        event = accuracy_result(metric="sample_len", value=1319.0)
-        event["results"].append(
-            {"task": "gsm8k", "metric": "exact_match,strict-match", "value": 0.9, "primary": False}
-        )
-        tasks = _only_model(agg.aggregate([event]))["accuracy_tasks"]
-        assert [(t["metric"], t["primary"]) for t in tasks] == [("exact_match,strict-match", True)]
 
     def test_two_workloads_for_one_model_and_device_are_separate_series(self):
         events = [
@@ -418,16 +354,6 @@ class TestExpectedIsPublished:
         snapshot = self._snapshot("2026-01-05T00:00:00Z", [], accuracy)
         assert agg.aggregate([snapshot])["expected"]["accuracy"] == accuracy
 
-    def test_a_snapshot_predating_accuracy_publishes_an_empty_list(self):
-        # Written before the collector recorded lm-eval tasks; the page falls
-        # back to observed groups rather than reading undefined.
-        snapshot = {
-            "event": "expected_configs",
-            "received_at": "2026-01-05T00:00:00Z",
-            "configs": [{"workload": "wl"}],
-        }
-        assert agg.aggregate([snapshot])["expected"]["accuracy"] == []
-
     def test_malformed_accuracy_entries_are_dropped(self):
         snapshot = self._snapshot("2026-01-05T00:00:00Z", [], [{"task": "gsm8k"}, "nonsense", 7])
         assert agg.aggregate([snapshot])["expected"]["accuracy"] == [{"task": "gsm8k"}]
@@ -447,11 +373,6 @@ class TestExpectedIsPublished:
             {**configs[0], "parallel_label": "TP4 · EP", "gpus": 4}
         ]
         assert payload["expected"]["recorded_at"] == "2026-01-05T00:00:00Z"
-
-    def test_a_snapshot_predating_parallelism_is_labelled_from_its_tp(self):
-        snapshot = self._snapshot("2026-01-05T00:00:00Z", [{"workload": "wl", "tp": 8}])
-        config = agg.aggregate([snapshot])["expected"]["configs"][0]
-        assert (config["parallel_label"], config["gpus"]) == ("TP8", 8)
 
     def test_the_newest_snapshot_wins(self):
         old = self._snapshot("2026-01-01T00:00:00Z", [{"workload": "old"}])
@@ -585,50 +506,3 @@ class TestRunSummary:
         )
         assert agg.main() == 0
         assert "- No payload was produced." in capsys.readouterr().out
-
-
-class TestNightlyRuns:
-    """Every nightly the collector saw, so the page can explain a gap."""
-
-    def _run(self, build: int, day: str, state: str = "passed") -> dict:
-        return {
-            "event": "nightly_run",
-            "build_number": build,
-            "nightly_date": day,
-            "date": day + "T14:00:00Z",
-            "state": state,
-            "build_url": f"https://buildkite.com/vllm/perf-eval/builds/{build}",
-            "received_at": "2026-01-10T00:00:00Z",
-        }
-
-    def test_each_run_carries_how_many_amd_results_it_produced(self):
-        events = [
-            perf_result(build_number=601),
-            self._run(601, "2026-01-05"),
-            self._run(603, "2026-01-06", state="failed"),
-        ]
-        runs = agg.aggregate(events)["nightly_runs"]
-        assert [(r["build"], r["amd_results"], r["state"]) for r in runs] == [
-            ("603", 0, "failed"),
-            ("601", 1, "passed"),
-        ]
-
-    def test_newest_first_by_buildkite_date_then_build(self):
-        events = [
-            self._run(700, "2026-01-04"),
-            self._run(702, "2026-01-06"),
-            self._run(701, "2026-01-06"),
-        ]
-        assert [r["build"] for r in agg.aggregate(events)["nightly_runs"]] == ["702", "701", "700"]
-
-
-class TestJobLinks:
-    def test_a_config_names_the_job_that_ran_it_in_each_build(self):
-        event = {**perf_result(build_number=601), "buildkite_artifact_job_id": "job-601"}
-        (config,) = _only_model(agg.aggregate([event]))["perf_configs"]
-        assert config["jobs"] == {"601": "job-601"}
-
-    def test_an_accuracy_task_names_its_job_too(self):
-        event = {**accuracy_result(build_number=601), "buildkite_artifact_job_id": "job-a"}
-        (task, *_) = _only_model(agg.aggregate([event]))["accuracy_tasks"]
-        assert task["jobs"] == {"601": "job-a"}

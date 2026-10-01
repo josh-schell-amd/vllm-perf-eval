@@ -63,9 +63,9 @@ every AMD workload's gsm8k score moves every night. One gsm8k question out of
 1,319 is worth 0.08 points, and the run-to-run spread is about 0.7 points, so
 the 1-point threshold sits just above it.
 
-**Failed requests are flagged.** A run where some requests failed is not
-comparable to a clean one, so its failed count shows in the chart tooltips and
-on its regression row.
+**Failed requests are not known.** A run where some requests failed is not
+comparable to a clean one, but perf-eval does not send failed counts to
+Databricks, so such a run cannot be told apart.
 
 ## No smoothing, on purpose
 

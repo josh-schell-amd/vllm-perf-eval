@@ -19,7 +19,6 @@ const {
   verdict,
   accuracyVerdict,
   nightKey,
-  isOngoing,
   reportedTonight,
   comparedOvernight,
   REG_TIERS,
@@ -35,11 +34,9 @@ const {
   accuracyPoints,
   rankNightlies,
   chartBoundsFor,
-  runDay,
   runRows,
   sortRows,
   toCsv,
-  nightlyStatus,
 } = window.PerfAnalysis;
 
 /* ================================================================
@@ -81,21 +78,6 @@ const FACETS = [
    ================================================================ */
 
 
-// A run with failed requests is not comparable to a clean one; say so wherever it shows.
-function hadFailures(p) { return !!p && p.failed_requests > 0; }
-
-// The key for the orange ▲ that marks a run with failed requests on a chart.
-function failedKey() {
-  return '<span class="hint-key"><span class="failed-mark">▲</span>run had failed requests: '
-    + 'not comparable to a clean run</span>';
-}
-function failedNote(p) {
-  if (!(p && p.failed_requests > 0)) return '';
-  const failed = integer(Math.round(p.failed_requests));
-  // Without a completed count there is no total to state.
-  if (p.completed_requests == null) return failed + ' requests failed';
-  return failed + ' of ' + integer(Math.round(p.failed_requests + p.completed_requests)) + ' requests failed';
-}
 
 
 
@@ -180,10 +162,8 @@ function axisTitle(metric, fallback) {
 
 // A series point names its build; the payload lists each build's date and
 // provenance once, in `builds`.
-function withBuild(p, jobs) {
+function withBuild(p) {
   const b = DATA.builds[p.build] || {};
-  const root = safeUrl(b.build_url);
-  const job = (jobs || {})[p.build];
   return {
     t: parseTime(b.date),
     value: Number(p.value),
@@ -192,9 +172,7 @@ function withBuild(p, jobs) {
     vllm_commit: b.vllm_commit,
     image: b.image,
     night: nightKey(b, p.build),
-    // The job that ran this config, where known; the whole build otherwise.
-    build_url: root && /^[0-9a-f-]{36}$/i.test(job || '') ? root + '#' + job : root,
-    build_root_url: root,
+    build_url: safeUrl(b.build_url),
     build_number: p.build,
   };
 }
@@ -208,11 +186,7 @@ function buildConfigs(payload) {
         nights = new Map();
       Object.keys(cfg.metrics || {}).forEach(mk => {
         const pts = ((cfg.metrics[mk] || {}).series || [])
-          .map(p => ({
-            ...withBuild(p, cfg.jobs),
-            completed_requests: p.completed_requests,
-            failed_requests: p.failed_requests
-          }))
+          .map(withBuild)
           .filter(p => p.t > 0 && Number.isFinite(p.value))
           .sort((a, b) => a.t - b.t);
         if (!pts.length) return;
@@ -264,7 +238,7 @@ function buildAccuracy(payload) {
   (payload.models || []).forEach(model => {
     (model.accuracy_tasks || []).forEach(task => {
       const pts = (task.series || [])
-        .map(p => withBuild(p, task.jobs))
+        .map(withBuild)
         .filter(p => p.t > 0 && Number.isFinite(p.value))
         .sort((a, b) => a.t - b.t);
       if (!pts.length) return;
@@ -319,7 +293,6 @@ const state = {
   perfMetric: null, // Performance tab bar metric; null = the default
   selected: {}, // facet key -> Set of allowed values (empty = all)
   onlyRegressed: false, // charts and table show only regressed configs
-  onlyFailed: false, // only configs whose newest run had failed requests
   chartDays: null, // trend chart window in days; null = the full window
   runsSort: null, // Data tab column key, '-' prefixed for descending; null = newest first
 };
@@ -380,16 +353,7 @@ function shownConfigs() {
     const regressed = regressedKeys();
     configs = configs.filter(c => regressed.has(c.key));
   }
-  if (state.onlyFailed) configs = configs.filter(hadFailedRequests);
   return configs;
-}
-
-// Whether a config's newest run in the window had failed requests, as
-// vllm bench serve reports them.
-function hadFailedRequests(c) {
-  const newest = Object.values(c.metrics).map(pts => pts.filter(p => p.t >= windowCutoff()).at(-1))
-    .filter(Boolean).sort((a, b) => b.t - a.t)[0];
-  return !!newest && newest.failed_requests > 0;
 }
 
 /* ================================================================
@@ -585,16 +549,6 @@ function coverage() {
   };
 }
 
-// After the newest nightly with AMD results: newer nightlies with none, and
-// days with no nightly (nightlyStatus). Judged at collection time, so a
-// stopped collector is reported as that, not as missing nightlies.
-function nightlyGaps() {
-  const latest = latestRun();
-  return nightlyStatus(DATA.nightly_runs,
-    latest ? { build: String(latest.build_number), day: latest.day } : null,
-    parseTime(DATA.generated_at));
-}
-
 // A point from the latest nightly, for the card that names it. Unfiltered,
 // and the same nightly every other card compares.
 function latestRun() {
@@ -617,34 +571,6 @@ function nightliesInWindow() {
 /* ================================================================
    6. CONTROLS
    ================================================================ */
-// How a nightly with no AMD results ended, from its Buildkite state.
-function runOutcome(run) {
-  if (run.state === 'canceled' || run.state === 'canceling') return 'was canceled';
-  // Every nightly's build state is usually failed (some job always is), so
-  // the state is noted, not taken as the reason.
-  return 'ran, but no AMD workload produced results'
-    + (run.state && run.state !== 'passed' ? ' (build ' + esc(run.state) + ')' : '');
-}
-
-// One gap as text: that day's nightlies and how each ended, or that none ran.
-function gapText(gap, known, links) {
-  if (gap.runs.length) {
-    return gap.runs.map(run => (links
-      ? buildLink({ build_number: run.build, build_url: safeUrl(run.build_url) }, null)
-      : '#' + esc(run.build)) + ' ' + runOutcome(run)).join('; ');
-  }
-  return known ? 'no nightly ran' : 'no AMD results';
-}
-
-// A nightly still going, and what AMD work it has left. Not a problem:
-// its results are collected once its AMD jobs finish.
-function runningText(run) {
-  const left = run.amd_pending || [];
-  return '#' + esc(run.build) + ' still running'
-    + (left.length ? ', waiting on ' + left.map(esc).join(', ')
-      : ': AMD jobs done, collected on the next run');
-}
-
 // Collection runs hourly by day; older than this, it has missed a day.
 const COLLECTOR_STALE_MS = 36 * 3600000;
 
@@ -654,16 +580,7 @@ function renderNotice() {
   const lines = [];
   let heading = '';
   const latest = latestRun();
-  if (!latest) {
-    heading = 'No AMD nightly results in the last ' + WINDOW_DAYS + ' days.';
-  } else {
-    const status = nightlyGaps();
-    if (status.gaps.length) {
-      heading = 'No AMD results since the ' + esc(latest.day) + ' nightly ('
-        + buildLink({ build_number: latest.build_number, build_url: latest.build_root_url }, null) + ').';
-      status.gaps.forEach(gap => lines.push(esc(gap.day) + ' · ' + gapText(gap, status.known, true)));
-    }
-  }
+  if (!latest) heading = 'No AMD nightly results in the last ' + WINDOW_DAYS + ' days.';
   const collected = parseTime(DATA.generated_at);
   if (collected && Date.now() - collected > COLLECTOR_STALE_MS) {
     lines.push('Results were last collected ' + esc(relTime(collected))
@@ -690,11 +607,10 @@ function facetValues(f) {
 function facetCount(f, v) {
   const regressed = state.onlyRegressed ? regressedUnfiltered() : null;
   return CONFIGS.filter(c => f.get(c) === v && facetMatches(c, f.key) && hasPointsInWindow(c)
-    && (!regressed || regressed.has(c.key)) && (!state.onlyFailed || hadFailedRequests(c))).length;
+    && (!regressed || regressed.has(c.key))).length;
 }
 function activeFilterCount() {
-  return FACETS.reduce((n, f) => n + state.selected[f.key].size, 0) + (state.onlyRegressed ? 1 : 0)
-    + (state.onlyFailed ? 1 : 0);
+  return FACETS.reduce((n, f) => n + state.selected[f.key].size, 0) + (state.onlyRegressed ? 1 : 0);
 }
 
 function facetOptions(f) {
@@ -722,7 +638,6 @@ function setFacet(key, update) {
 function resetFilters() {
   FACETS.forEach(f => state.selected[f.key].clear());
   state.onlyRegressed = false;
-  state.onlyFailed = false;
   applyFilters();
 }
 
@@ -748,8 +663,6 @@ function renderHeaderFilters() {
   }).join('')
     + toggleButton('only-regressed', state.onlyRegressed, 'Regressed', regressedKeys().size,
       'Show only configurations that regressed overnight')
-    + toggleButton('only-failed', state.onlyFailed, 'Failed requests', visibleConfigs().filter(hadFailedRequests).length,
-      'Show only configurations whose newest run had failed requests, as vllm bench serve reports them')
     + '<span class="filter-summary">' + (active ? integer(shownConfigs().length) + ' configs' : 'Showing all') + '</span>'
     + '<button class="filter-reset" id="header-reset"' + (active ? '' : ' disabled') + '>Reset</button>';
 
@@ -771,7 +684,7 @@ function renderHeaderFilters() {
         + (input.hasAttribute('data-all') ? '[data-all]' : '[value="' + cssEscape(input.value) + '"]'));
     });
   });
-  const toggles = { 'only-regressed': 'onlyRegressed', 'only-failed': 'onlyFailed' };
+  const toggles = { 'only-regressed': 'onlyRegressed' };
   Object.entries(toggles).forEach(([id, key]) => {
     const btn = document.getElementById(id);
     if (btn) btn.addEventListener('click', () => {
@@ -813,22 +726,12 @@ function renderKpis() {
   const cards = [];
 
   if (latest) {
-    // Each later day with no AMD results, and why, turns the card orange.
-    const status = nightlyGaps();
-    const shown = status.gaps.slice(0, 3);
     cards.push({
-      cls: status.gaps.length ? 'warn' : 'linked',
-      href: latest.build_root_url,
+      cls: 'linked',
+      href: latest.build_url,
       label: 'Latest nightly with AMD results',
       value: latest.day,
-      sub: 'build #' + esc(latest.build_number || '?') + ' · vLLM <code>' + esc(shortSha(latest.vllm_commit)) + '</code>'
-        + shown.map(gap => '<br><span class="warnc">' + esc(gap.day.slice(5)) + ': '
-          + gapText(gap, status.known, false).replace('ran, but no AMD workload produced results', 'ran, no AMD results')
-            .replace(/ \(build [^)]*\)/, '') + '</span>').join('')
-        + (status.gaps.length > shown.length
-          ? '<br><span class="warnc">and ' + (status.gaps.length - shown.length) + ' more</span>' : '')
-        + status.running.map(run => '<br><span class="neutral">' + esc(runDay(run).slice(5)) + ': '
-          + runningText(run) + '</span>').join(''),
+      sub: 'build #' + esc(latest.build_number || '?') + ' · vLLM <code>' + esc(shortSha(latest.vllm_commit)) + '</code>',
     });
   }
 
@@ -992,44 +895,19 @@ function renderCoveragePanel() {
   const host = document.getElementById('coverage-host');
   const cov = coverage();
   const accMissing = (cov && cov.accuracy) ? cov.accuracy.missing : [];
-  // Whole nightlies after the latest one that produced no AMD results.
-  const status = latestRun() ? nightlyGaps() : { known: false, gaps: [] };
   const inBuild = cov ? cov.missing + accMissing.length : 0;
-  if (!status.gaps.length && !inBuild) { host.innerHTML = ''; return; }
+  if (!inBuild) { host.innerHTML = ''; return; }
 
-  const heading = [];
-  if (status.gaps.length) {
-    heading.push(integer(status.gaps.length) + ' later nightl' + (status.gaps.length === 1 ? 'y' : 'ies')
-      + ' with no AMD results');
+  const parts = [];
+  if (cov.missing) parts.push(integer(cov.missing) + ' perf config' + (cov.missing === 1 ? '' : 's'));
+  if (accMissing.length) {
+    parts.push(integer(accMissing.length) + ' accuracy result' + (accMissing.length === 1 ? '' : 's'));
   }
-  if (inBuild) {
-    const parts = [];
-    if (cov.missing) parts.push(integer(cov.missing) + ' perf config' + (cov.missing === 1 ? '' : 's'));
-    if (accMissing.length) {
-      parts.push(integer(accMissing.length) + ' accuracy result' + (accMissing.length === 1 ? '' : 's'));
-    }
-    heading.push('in build #' + esc(cov.build) + ': ' + parts.join(', '));
-  }
-  // Everything a nightly should have reported, for the whole-nightly rows.
-  const expectedAll = cov ? 'all ' + integer(cov.expected) + ' perf configs'
-    + (cov.accuracy ? ' and ' + integer(cov.accuracy.total) + ' accuracy results' : '') : 'all results';
+  const heading = 'in build #' + esc(cov.build) + ': ' + parts.join(', ');
 
   host.innerHTML = '<div class="cov-panel"><div class="cov-head">'
-    + '<h3>Missing results</h3><span class="cov-count">' + heading.join(' · ') + '</span>'
+    + '<h3>Missing results</h3><span class="cov-count">' + heading + '</span>'
     + '</div><div class="cov-list">'
-    + status.gaps.map(gap =>
-      '<div class="cov-item whole">'
-      + '<div class="cov-name">Nightly ' + esc(gap.day) + '</div>'
-      + '<div class="cov-shapes">'
-      + (gap.runs.length
-        ? gap.runs.map(run => '<span class="cov-shape">' + expectedAll + '</span>'
-          + '<span class="neutral" style="font-size:11px;margin-left:8px">'
-          + buildLink({ build_number: run.build, build_url: safeUrl(run.build_url) }, null) + ' ran</span>').join('')
-        : '<span class="cov-shape">' + expectedAll + '</span>')
-      + '</div>'
-      + '<div class="cov-tag">' + (gap.runs.length ? 'no AMD results'
-        : status.known ? 'no nightly ran' : 'no AMD results') + '</div>'
-      + '</div>').join('')
     + (cov ? cov.groups.map(g =>
       '<div class="cov-item' + (g.whole ? ' whole' : '') + '">'
       + '<div class="cov-name">' + esc(g.name) + ' <span class="neutral">in #' + esc(cov.build) + '</span></div>'
@@ -1137,7 +1015,6 @@ function renderRegressionPanel() {
     + '</span></span></div><div class="reg-list">'
     + ordered.map(g => {
       const linked = !!g.row.build_url;
-      const failed = failedNote(g.row);
       const inner = '<span class="reg-config">' + esc(g.config.label) + '</span>'
         + '<span class="reg-metrics">' + g.items.map(d => {
           // Hover shows the actual values.
@@ -1148,7 +1025,6 @@ function renderRegressionPanel() {
             + esc(d.metric.label) + ' <b>' + pctDirection(d.ratio, 1) + '</b></span>';
         }).join('') + '</span>'
         + '<span class="reg-build">'
-        + (failed ? '<span class="reg-failed">' + esc(failed) + '</span> · ' : '')
         + 'build #' + esc(g.row.build_number || '?')
         + (linked ? EXT_INLINE : '') + '</span>';
       // The whole row links to the build.
@@ -1179,10 +1055,9 @@ function commitsByDay(points) {
 // sit (min and max are noons). A day with a point reads "9/25 abc1234", as
 // ATOM labels it: the date and the commit in two colours. A day without one,
 // between the chart's first point and the newest nightly that is due, reads
-// "9/24 missing" in orange: no nightly ran, or it ran without these configs.
-// A day whose nightly is still going reads "9/29 running" in grey instead: not
-// missing, just not finished. Days before the chart's first point or not yet
-// due show the date alone.
+// "9/24 missing" in orange: no nightly ran, or it ran without these configs
+// (or has not reported them yet). Days before the chart's first point or not
+// yet due show the date alone.
 //
 // Returns { scale, labels }: pass labels as a chart plugin. Chart.js draws a
 // tick label in one colour, so the scale lays the text out invisibly and the
@@ -1193,13 +1068,11 @@ function dayAxis(min, max, theme, points) {
   const commits = commitsByDay(points);
   const first = [...commits.keys()].sort()[0] || '';
   const due = fmtDate(parseTime(DATA.generated_at) - 40 * 3600000);
-  const running = new Set(DATA.nightly_runs.filter(isOngoing).map(runDay));
   const isMissing = day => !commits.has(day) && day > first && day <= due;
   const colors = {
     date: cssVar('--text-primary'),
     commit: cssVar('--accent-blue'),
     missing: cssVar('--accent-orange'),
-    running: cssVar('--text-secondary'),
     plain: theme.tick,
   };
   // A label as [text, colour] pieces, in reading order.
@@ -1209,7 +1082,6 @@ function dayAxis(min, max, theme, points) {
     const label = Number(month) + '/' + Number(date);
     const sha = commits.get(day);
     if (sha && sha !== '—') return [[label, colors.date], [' ' + sha, colors.commit]];
-    if (running.has(day) && day > first) return [[label + ' running', colors.running]];
     if (isMissing(day)) return [[label + ' missing', colors.missing]];
     return [[label, colors.plain]];
   };
@@ -1341,7 +1213,6 @@ function drawTrendChart(group, canvasId, metric) {
   // Text colour, so the ring contrasts in both themes.
   const ringColor = cssVar('--text-primary') || '#fff';
   const regForMetric = regressedKeysForMetric(metric.key);
-  const failedColor = cssVar('--accent-orange');
   // Each regressed config's change on this metric, to name it in the legend.
   const change = new Map(regressionsOf().filter(d => d.metricKey === metric.key).map(d => [d.configKey, d.ratio]));
   const datasets = group.series
@@ -1365,15 +1236,11 @@ function drawTrendChart(group, canvasId, metric) {
         borderWidth: isReg ? 2.75 : 1.6,
         tension: 0,
         spanGaps: true,
-        // Ring the newest point: that is the build to blame. A run with failed
-        // requests is an orange triangle: its numbers are not comparable.
-        pointStyle: ctx => hadFailures(pts[ctx.dataIndex]) ? 'triangle' : 'circle',
-        pointRadius: ctx => hadFailures(pts[ctx.dataIndex]) ? 7
-          : (isReg && ctx.dataIndex === last) ? 6 : 2.5,
+        // Ring the newest point: that is the build to blame.
+        pointRadius: ctx => (isReg && ctx.dataIndex === last) ? 6 : 2.5,
         pointHoverRadius: 8,
-        pointBackgroundColor: ctx => hadFailures(pts[ctx.dataIndex]) ? failedColor : color,
-        pointBorderColor: ctx => (isReg && ctx.dataIndex === last) ? ringColor
-          : hadFailures(pts[ctx.dataIndex]) ? failedColor : color,
+        pointBackgroundColor: color,
+        pointBorderColor: ctx => (isReg && ctx.dataIndex === last) ? ringColor : color,
         pointBorderWidth: ctx => (isReg && ctx.dataIndex === last) ? 2 : 0,
       };
     }).filter(Boolean);
@@ -1446,9 +1313,7 @@ function drawTrendChart(group, canvasId, metric) {
             label: item => {
               const p = item.dataset.data[item.dataIndex]._p;
               const sha = p.vllm_commit ? ' · ' + shortSha(p.vllm_commit) : '';
-              const note = failedNote(p);
-              const failed = note ? ' · ' + note : '';
-              return item.dataset.label + ': ' + fmt(item.parsed.y, metric.digits) + ' ' + unitOf(metric) + sha + failed;
+              return item.dataset.label + ': ' + fmt(item.parsed.y, metric.digits) + ' ' + unitOf(metric) + sha;
             },
             // Nothing else says the points are clickable.
             afterBody: () => '\nClick for history',
@@ -1472,8 +1337,6 @@ function renderTrendsTab() {
     + '<div class="card-hint">One chart per model and device, a line per configuration. A red line '
     + 'regressed by <b>' + thresholdLabel() + ' or more</b> on this metric, its newest point ringed. '
     + 'Click a point for its history and build.</div>'
-    + (groups.some(g => g.series.some(s => chartPointsIn(s.config, metric.key).some(hadFailures)))
-      ? '<div class="hint-keys">' + failedKey() + '</div>' : '')
     + renderWindowBar() + renderTrendCharts(groups, metric) + '</div>'
     + renderRegressionPanel();
   bindMetricPicker(host);
@@ -1720,9 +1583,6 @@ function renderPerformanceTab() {
     + '+</b> worse vs #' + esc(previousNightlyBuild() || '?') + '</span>'
     + '<span class="hint-key"><i class="absent"></i>not in #' + esc(latestNightlyBuild() || '?')
     + '</span>'
-    + (groups.some(g => g.rows.some(r => hadFailures(r.latest.point)))
-      ? '<span class="hint-key"><span class="failed-mark">⚠</span>newest run had failed requests: '
-        + 'not comparable to a clean run</span>' : '')
     + '</div>';
   // A bar from an older build looks like tonight's except for its shade, so
   // each card also says how many of its configs the newest build lacks.
@@ -1807,7 +1667,6 @@ function perfBarTipHtml(row, metric, unit) {
   if (!latest.tonight) {
     rows += tipRow('Status', 'Not in #' + esc(latestNightlyBuild() || '?'));
   }
-  if (failedNote(p)) rows += tipRow('Failed', esc(failedNote(p)), 'warnc');
   return '<div class="tip-title">' + esc(row.label) + '</div>'
     + '<div class="tip-value">' + esc(fmt(display(p.value, metric), metric.digits)) + '</div>'
     + '<div class="tip-unit">' + esc(unit) + '</div>'
@@ -1868,8 +1727,8 @@ function drawPerfChart(group, canvasId, metric) {
     },
     plugins: [
       barValuesPlugin(
-        i => hadFailures(group.rows[i].latest.point) ? cssVar('--accent-orange') : valueColor,
-        (v, i) => (hadFailures(group.rows[i].latest.point) ? '⚠ ' : '') + compact(v, metric.digits)),
+        () => valueColor,
+        v => compact(v, metric.digits)),
       avgLinePlugin(avg, 'avg ' + compact(avg, metric.digits), theme.tick),
     ],
     options: {
@@ -1994,10 +1853,6 @@ function perfDetail(c, latest, p) {
     + ' ' + esc(unitOf(m)) + ' ' + changeHtml(latest[m.key]) + '</span></div>').join('');
   const item = (k, v) => '<div class="detail-item"><span class="detail-key">' + esc(k)
     + '</span><span class="detail-val">' + v + '</span></div>';
-  const requests = p.completed_requests != null
-    ? integer(Math.round(p.completed_requests)) + ' completed'
-      + (p.failed_requests > 0 ? ', <span class="warnc">' + integer(Math.round(p.failed_requests)) + ' failed</span>' : '')
-    : '—';
   return '<div class="detail-box"><div><h5>Metrics · click for history</h5>' + metrics + '</div>'
     + '<div><h5>Run</h5>'
     + item('Configuration', esc(c.label))
@@ -2008,7 +1863,6 @@ function perfDetail(c, latest, p) {
     + item('Build', buildLink(p, null))
     + item('vLLM commit', commitLink(p.vllm_commit))
     + item('Image', esc(p.image || '—'))
-    + item('Requests', requests)
     + '</div></div>';
 }
 
@@ -2557,10 +2411,6 @@ function runColumns() {
       html: r => esc(fmt(display(r.values[m.key], m), m.digits)),
       csv: [[m.label + (unitOf(m) ? ' (' + unitOf(m) + ')' : ''), r => display(r.values[m.key], m)]],
     })),
-    { key: 'failed', label: 'Failed', num: true, get: r => r.point.failed_requests,
-      html: r => r.point.failed_requests == null ? '—'
-        : r.point.failed_requests > 0 ? '<span class="warnc">' + integer(r.point.failed_requests) + '</span>' : '0',
-      csv: [['completed_requests', r => r.point.completed_requests], ['failed_requests', r => r.point.failed_requests]] },
     { key: 'vllm', label: 'vLLM', get: r => r.point.vllm_commit, html: r => commitLink(r.point.vllm_commit),
       csv: [['vllm_commit', r => r.point.vllm_commit]] },
   ];
@@ -2695,10 +2545,9 @@ function openHistory(title, subtitle, metric, points, v) {
         borderColor: accent,
         backgroundColor: accent,
         borderWidth: 2,
-        pointStyle: ctx => hadFailures(points[ctx.dataIndex]) ? 'triangle' : 'circle',
-        pointRadius: ctx => hadFailures(points[ctx.dataIndex]) ? 7 : 3,
-        pointBackgroundColor: ctx => hadFailures(points[ctx.dataIndex]) ? cssVar('--accent-orange') : accent,
-        pointBorderColor: ctx => hadFailures(points[ctx.dataIndex]) ? cssVar('--accent-orange') : accent,
+        pointRadius: 3,
+        pointBackgroundColor: accent,
+        pointBorderColor: accent,
         tension: 0,
         fill: false,
       }]
@@ -2719,8 +2568,7 @@ function openHistory(title, subtitle, metric, points, v) {
             title: items => items[0].raw._p.day,
             afterBody: items => {
               const p = points[items[0].dataIndex] || {};
-              const lines = ['vLLM commit: ' + shortSha(p.vllm_commit), 'Build: #' + (p.build_number || '?')];
-              return failedNote(p) ? lines.concat(failedNote(p)) : lines;
+              return ['vLLM commit: ' + shortSha(p.vllm_commit), 'Build: #' + (p.build_number || '?')];
             },
           }
         },
@@ -2816,7 +2664,6 @@ function syncToHash() {
     if (sel.length) parts.push(f.key + '=' + sel.map(encodeURIComponent).join(','));
   });
   if (state.onlyRegressed) parts.push('regressed=1');
-  if (state.onlyFailed) parts.push('failed=1');
   if (state.runsSort) parts.push('sort=' + encodeURIComponent(state.runsSort));
   suppressHash = true;
   window.location.hash = parts.join('&');
@@ -2831,7 +2678,6 @@ function readFromHash() {
   state.runsSort = null;
   FACETS.forEach(f => state.selected[f.key].clear());
   state.onlyRegressed = false;
-  state.onlyFailed = false;
   raw.split('&').forEach(chunk => {
     const i = chunk.indexOf('=');
     if (i < 0) return;
@@ -2840,7 +2686,6 @@ function readFromHash() {
     if (k === 'tab' && TABS.some(t => t.id === v)) state.tab = v;
     else if (k === 'days' && /^\d+$/.test(v)) state.chartDays = Number(v);
     else if (k === 'regressed') state.onlyRegressed = v === '1';
-    else if (k === 'failed') state.onlyFailed = v === '1';
     else if (k === 'sort') state.runsSort = safeDecode(v) || null;
     else if (k === 'metric' && METRIC_BY_KEY[v]) state.perfMetric = v;
     else {

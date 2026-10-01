@@ -187,5 +187,5 @@ runtime `TypeError`. It is now a single bound lookup via a walrus.
 The other ~20 findings were in tests that subscripted an `X | None` result
 directly; adding `assert result is not None` gives a readable failure instead
 of `TypeError: 'NoneType' object is not subscriptable`. Two signatures also
-changed to match what they accept: `transform_perf(gpus: int | None)`, and the
-fixtures' `nightly: object`.
+changed to match what they accept (one has since been removed with the
+Buildkite collector), and the fixtures' `nightly: object`.

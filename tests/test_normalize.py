@@ -59,11 +59,6 @@ class TestParallelism:
         assert nz.parallel_label(parallelism) == label
         assert nz.gpu_count(parallelism) == gpus
 
-    def test_a_record_with_only_tp_reads_as_that_tp(self):
-        assert nz.parallelism_of({"tp": 8}) == {"tensor_parallel_size": 8}
-        assert nz.parallelism_of({"tp": 1}) == {}
-        assert nz.parallelism_of({}) == {}
-
 
 class TestNumericGuards:
     @pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf"), "x", None])
@@ -74,52 +69,6 @@ class TestNumericGuards:
         assert nz.to_float("1.5") == 1.5
         assert nz.to_int("7") == 7
         assert nz.to_int("x") is None
-
-
-class TestTransformPerf:
-    def test_per_gpu_division_and_unit_conversion(self):
-        raw = {
-            "total_token_throughput": 800.0,
-            "output_throughput": 200.0,
-            "mean_ttft_ms": 250.0,
-            "mean_tpot_ms": 20.0,
-        }
-        metrics = nz.transform_perf(raw, gpus=4)
-        assert metrics["tput_per_gpu"] == 200.0
-        assert metrics["output_tput_per_gpu"] == 50.0
-        assert metrics["input_tput_per_gpu"] == 150.0
-        assert metrics["mean_ttft"] == 0.25
-        assert metrics["mean_tpot"] == 0.02
-        # Interactivity is derived from TPOT as 1000 / tpot_ms.
-        assert metrics["mean_intvty"] == 50.0
-
-    def test_latency_keeps_sub_millisecond_precision(self):
-        # One 0.1 ms step on a 5 ms TPOT is 2%, four times the regression threshold.
-        metrics = nz.transform_perf({"mean_tpot_ms": 5.234}, gpus=1)
-        assert metrics["mean_tpot"] == pytest.approx(0.005234)
-
-    def test_zero_or_no_gpus_is_treated_as_one(self):
-        raw = {"total_token_throughput": 10.0, "output_throughput": 4.0}
-        assert nz.transform_perf(raw, gpus=0)["tput_per_gpu"] == 10.0
-        assert nz.transform_perf(raw, gpus=None)["tput_per_gpu"] == 10.0
-
-    def test_zero_tpot_yields_no_interactivity(self):
-        # Zero would read as a 100% interactivity regression.
-        metrics = nz.transform_perf({"mean_tpot_ms": 0.0}, gpus=1)
-        assert "mean_intvty" not in metrics
-
-    def test_a_missing_output_throughput_is_left_out_not_zero(self):
-        # As zero, input throughput would equal the total.
-        metrics = nz.transform_perf({"total_token_throughput": 800.0}, gpus=1)
-        assert metrics == {"tput_per_gpu": 800.0}
-
-    def test_unknown_metrics_are_dropped(self):
-        metrics = nz.transform_perf({"some_other_ms": 5.0}, gpus=1)
-        assert "some_other" not in metrics
-
-    def test_nan_latency_is_skipped(self):
-        metrics = nz.transform_perf({"mean_ttft_ms": float("nan")}, gpus=1)
-        assert "mean_ttft" not in metrics
 
 
 class TestAccuracyRows:
@@ -170,48 +119,6 @@ class TestAccuracyRows:
             ("exact_match,strict-match", False),
             ("exact_match,flexible-extract", True),
         ]
-
-
-class TestNormalizeEvalPayload:
-    def _payload(self, **overrides):
-        payload = {
-            "kind": "results",
-            "model": "meta-llama/Test-8B",
-            "workload": "test_8b_mi355x",
-            "device": "mi355x",
-            "image": "vllm/vllm-openai-rocm:nightly-abc123def456",
-            "vllm_commit": "abc123def456",
-            "nightly": True,
-            "data": {
-                "config": {"model": "local-completions"},
-                "results": {"gsm8k": {"exact_match,strict-match": 0.8}},
-            },
-        }
-        payload.update(overrides)
-        return payload
-
-    def test_canonical_shape(self):
-        event = nz.normalize_eval_payload(self._payload())
-        assert event is not None
-        assert event["event"] == "accuracy_result"
-        assert event["model"] == "meta-llama/Test-8B"
-        assert event["nightly"] is True
-        assert event["vllm_commit"] == "abc123def456"
-        assert event["results"][0]["value"] == 0.8
-
-    def test_nvidia_payload_is_dropped(self):
-        payload = self._payload(
-            workload="test_8b_h200",
-            device="h200",
-            image="vllm/vllm-openai:nightly-abc123def456",
-        )
-        assert nz.normalize_eval_payload(payload) is None
-
-    def test_empty_results_dropped(self):
-        assert nz.normalize_eval_payload(self._payload(data={"results": {}})) is None
-
-    def test_wrong_kind_dropped(self):
-        assert nz.normalize_eval_payload(self._payload(kind="samples")) is None
 
 
 class TestMetricRegistry:

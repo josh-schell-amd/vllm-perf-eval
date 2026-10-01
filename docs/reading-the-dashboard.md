@@ -23,18 +23,12 @@ nightly* follows the filters.
 > rule. It is not a regression alarm.
 
 All filtering is in the header: a dropdown per facet (device, model,
-precision, ISL/OSL, concurrency), then two toggles with the number of
-configs each keeps. **Regressed** keeps configs that regressed overnight.
-**Failed requests** keeps configs whose newest run had failed requests; those
-counts come from the benchmark itself (`vllm bench serve` reports completed
-and failed requests), and a run with failures is not comparable to a clean
-one.
+precision, ISL/OSL, concurrency), then the **Regressed** toggle, which keeps
+configs that regressed overnight. The regression panel follows the header
+filters, as the charts do.
 
-On the charts, a run with failed requests is an orange ▲ (trends and
-history) or a ⚠ before a bar's value (Performance), with a key above. vLLM
-computes latency and throughput from the completed requests only, so such a
-run can look like an improvement when it is not. The regression panel follows
-the header toggles, as the charts do.
+Failed request counts are not shown: perf-eval does not send them to
+Databricks.
 
 A point links to its Buildkite build page (not a specific job: there is no
 job ID) when the build is known. Perf rows carry no build of their own, so a
@@ -44,12 +38,9 @@ Without one, the build is shown as its day (`#2026-10-01`), with no link.
 ## When the data is stale
 
 The view shows a trailing 30 days, anchored to *now*, so old numbers are
-never presented as current. There is no longer a day-by-day account of
-missing nightlies (`no nightly ran`, `#603 failed`, `#606 still running`,
-…) — that relied on polling Buildkite's build state, which the collector no
-longer does, and guessing at gaps with no signal behind them would just be
-noise (see `docs/data-pipeline.md`'s Data identity section). The one
-remaining staleness signal is generic and always accurate:
+never presented as current. There is no day-by-day account of nightlies that
+failed or are still running: nothing reports a nightly until it produces a
+result. The one staleness signal is:
 
 | The notice says | Meaning |
 |---|---|
@@ -129,7 +120,7 @@ URL, so **Copy link** reproduces the view.
 ### Data
 
 - Every nightly of every configuration in the window, one row each: date,
-  build, config, the headline metrics, failed requests and vLLM commit. The
+  build, config, the headline metrics and vLLM commit. The
   newest value per config, with every metric's change, is the Performance
   table's expanded row.
 - Click a heading to sort (again to reverse); the sort is kept in the URL.

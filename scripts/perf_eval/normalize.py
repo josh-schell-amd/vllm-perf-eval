@@ -1,7 +1,5 @@
-"""Pure functions turning raw perf-eval results into canonical events.
-
-Scope: AMD only. ``is_amd_workload`` is the one predicate for it, and every
-normalizer returns None for an NVIDIA run, so none reaches the store.
+"""The metric registry, the AMD scope predicate, parallelism labels, and
+lm-eval score rows: what the collector and the aggregation share.
 """
 
 from __future__ import annotations
@@ -160,7 +158,7 @@ def is_amd_workload(
 ) -> bool:
     """True if the device, workload stem or image marks the run as AMD.
 
-    Any one is enough: an artifact may carry only some of the three.
+    Any one is enough: a row may carry only some of the three.
     """
     return (
         is_amd_device(device)
@@ -190,17 +188,6 @@ _SIZE_LABELS = {
     "data_parallel_size": "DP",
 }
 _FLAG_LABELS = {"enable_expert_parallel": "EP"}
-
-
-def parallelism_of(record: dict) -> dict:
-    """A result's or expected config's parallelism, by vLLM flag name, defaults left out.
-
-    Records written before the map existed carry only ``tp``.
-    """
-    if isinstance(record.get("parallelism"), dict):
-        return record["parallelism"]
-    tp = to_int(record.get("tp")) or 1
-    return {"tensor_parallel_size": tp} if tp > 1 else {}
 
 
 def parallel_key(parallelism: dict) -> tuple:
@@ -245,38 +232,6 @@ def perf_metrics(payload: dict) -> dict[str, float]:
     return out
 
 
-def transform_perf(raw: dict, *, gpus: int | None) -> dict[str, float]:
-    """Turn a raw ``vllm bench serve`` result into per-GPU metrics.
-
-    Mirrors perf-eval's ``ingest_perf.transform``, except that it divides by TP x DP
-    and this by every GPU the server uses (``gpu_count``); they differ only once a
-    recipe uses PP or PCP. Only ``METRIC_META`` metrics are kept, so a new upstream
-    field cannot widen the published schema.
-    """
-    gpus = max(int(gpus or 1), 1)
-    # A field the result lacks is left out, never read as zero.
-    total = to_float(raw.get("total_token_throughput"))
-    output = to_float(raw.get("output_throughput"))
-    metrics: dict[str, float] = {}
-    if total is not None:
-        metrics["tput_per_gpu"] = total / gpus
-    if output is not None:
-        metrics["output_tput_per_gpu"] = output / gpus
-    if total is not None and output is not None:
-        metrics["input_tput_per_gpu"] = (total - output) / gpus
-    for key, value in raw.items():
-        if not isinstance(key, str) or not key.endswith("_ms"):
-            continue
-        millis = to_float(value)
-        if millis is None:
-            continue
-        base = key[: -len("_ms")]
-        metrics[base] = millis / 1000.0
-        if "tpot" in base and millis > 0:
-            metrics[base.replace("tpot", "intvty")] = 1000.0 / millis
-    return {k: v for k, v in metrics.items() if k in METRIC_META}
-
-
 # ---------------------------------------------------------------------------
 # Accuracy results (lm-eval)
 # ---------------------------------------------------------------------------
@@ -305,9 +260,7 @@ def is_score_metric(metric: str) -> bool:
 def score_rows(rows: list[dict]) -> list[dict]:
     """Keep only score rows and flag one headline metric per task.
 
-    Returns new dicts, so it is safe to apply to rows read from the store.
-    Applied again at aggregation, so events stored before a rule change are
-    judged by the current rule rather than the one they were written with.
+    Returns new dicts; the input rows are left as they were.
     """
     kept = [dict(row) for row in rows if is_score_metric(row.get("metric", ""))]
     by_task: dict[str, list[dict]] = {}
@@ -335,49 +288,9 @@ def accuracy_rows(payload: dict) -> list[dict]:
         if not isinstance(metrics, dict):
             continue
         for raw_key, raw_value in metrics.items():
-            value = to_float(raw_value)
+            # A bool is a flag, not a score, though float() accepts it.
+            value = None if isinstance(raw_value, bool) else to_float(raw_value)
             if value is None:
                 continue
             rows.append({"task": str(task_name), "metric": str(raw_key), "value": value})
     return score_rows(rows)
-
-
-def build_identity(payload: dict) -> dict:
-    """Pull a compact build-identity block out of a result payload."""
-    return {
-        "build_number": to_int(payload.get("buildkite_build_number")),
-        "build_url": payload.get("buildkite_build_url") or "",
-        "build_commit": payload.get("buildkite_commit") or "",
-        "branch": payload.get("buildkite_branch") or "",
-        "image": (payload.get("image") or "").strip(),
-        "vllm_commit": (payload.get("vllm_commit") or "").strip(),
-    }
-
-
-def normalize_eval_payload(payload: dict) -> dict | None:
-    """Canonicalize an lm-eval ``results`` push.
-
-    Returns ``None`` for a non-AMD workload or an empty result set.
-    """
-    if not isinstance(payload, dict) or payload.get("kind") != "results":
-        return None
-    workload = (payload.get("workload") or "").strip()
-    image = (payload.get("image") or "").strip()
-    device = (payload.get("device") or "").strip()
-    if not is_amd_workload(workload=workload, image=image, device=device):
-        return None
-    rows = accuracy_rows(payload)
-    if not rows:
-        return None
-    identity = build_identity(payload)
-    return {
-        "event": "accuracy_result",
-        "received_at": utcnow_iso(),
-        "nightly": bool(payload.get("nightly")),
-        "model": (payload.get("model") or "").strip(),
-        "workload": workload,
-        "task": (payload.get("task") or "").strip(),
-        "device": device,
-        **identity,
-        "results": rows,
-    }

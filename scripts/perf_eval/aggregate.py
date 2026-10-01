@@ -25,7 +25,6 @@ from perf_eval import (  # noqa: E402
 )
 from perf_eval.events import (  # noqa: E402
     EXPECTED_CONFIGS_EVENT,
-    NIGHTLY_RUN_EVENT,
     RESULT_EVENTS,
     finished_at,
     nightly_identity,
@@ -41,9 +40,6 @@ from perf_eval.normalize import (  # noqa: E402
     is_amd_workload,
     parallel_key,
     parallel_label,
-    parallelism_of,
-    score_rows,
-    to_int,
 )
 
 logging.basicConfig(
@@ -148,7 +144,7 @@ def build_perf_configs(perf_events: list[dict]) -> list[dict]:
     for event in perf_events:
         device = (event.get("device") or "").strip()
         isl, osl, conc = event.get("isl"), event.get("osl"), event.get("conc")
-        parallelism, precision = parallelism_of(event), event.get("precision") or ""
+        parallelism, precision = event.get("parallelism") or {}, event.get("precision") or ""
         key = (device, parallel_key(parallelism), precision, isl, osl, conc)
         config = configs.setdefault(
             key,
@@ -161,12 +157,8 @@ def build_perf_configs(perf_events: list[dict]) -> list[dict]:
                 "precision": precision,
                 "label": _config_label(device, isl, osl, conc),
                 "_metric_points": {},
-                "_jobs": {},
             },
         )
-        # The Buildkite job that ran this config, so a link can open it.
-        if event.get("buildkite_artifact_job_id"):
-            config["_jobs"][_build_key(event)] = event["buildkite_artifact_job_id"]
         timestamp = _finished_at(event)
         night = nightly_identity(event)
         for metric, value in (event.get("metrics") or {}).items():
@@ -176,15 +168,12 @@ def build_perf_configs(perf_events: list[dict]) -> list[dict]:
                     "_ts": timestamp,
                     "build": _build_key(event),
                     "value": value,
-                    "completed_requests": event.get("completed_requests"),
-                    "failed_requests": event.get("failed_requests"),
                 }
             )
 
     out = []
     for config in configs.values():
         metric_points = config.pop("_metric_points")
-        config["jobs"] = config.pop("_jobs")
         metrics_out = {}
         for metric, points in metric_points.items():
             meta = METRIC_META.get(metric, {"better": "higher"})
@@ -221,7 +210,7 @@ def build_accuracy_tasks(eval_events: list[dict]) -> list[dict]:
         night = nightly_identity(event)
         device = (event.get("device") or "").strip()
         workload = (event.get("workload") or "").strip()
-        for row in score_rows(event.get("results") or []):
+        for row in event.get("results") or []:
             key = (workload, device, row["task"], row["metric"])
             entry = tasks.setdefault(
                 key,
@@ -232,11 +221,8 @@ def build_accuracy_tasks(eval_events: list[dict]) -> list[dict]:
                     "metric": row["metric"],
                     "primary": bool(row.get("primary")),
                     "_points": [],
-                    "jobs": {},
                 },
             )
-            if event.get("buildkite_artifact_job_id"):
-                entry["jobs"][_build_key(event)] = event["buildkite_artifact_job_id"]
             entry["primary"] = entry["primary"] or bool(row.get("primary"))
             entry["_points"].append(
                 {
@@ -273,11 +259,10 @@ def _expected_from_events(events: list[dict]) -> dict:
     if newest is None:
         return {"recorded_at": "", "configs": [], "accuracy": []}
     configs = [
-        {**config, **_parallel_fields(parallelism_of(config))}
+        {**config, **_parallel_fields(config.get("parallelism") or {})}
         for config in newest.get("configs") or []
         if isinstance(config, dict)
     ]
-    # Snapshots taken before accuracy was recipe-derived have no `accuracy`.
     accuracy = [task for task in newest.get("accuracy") or [] if isinstance(task, dict)]
     return {
         "recorded_at": newest.get("received_at") or "",
@@ -286,73 +271,9 @@ def _expected_from_events(events: list[dict]) -> dict:
     }
 
 
-def _tp_shape(record: dict, tp: int) -> tuple:
-    return (
-        (record.get("model") or "").strip(),
-        (record.get("device") or "").strip(),
-        record.get("precision") or "",
-        tp,
-        record.get("isl"),
-        record.get("osl"),
-        record.get("conc"),
-    )
-
-
-def _recipe_parallelism(expected_configs: list[dict]) -> dict[tuple, dict]:
-    """The recipes' parallelism, keyed on what a perf event stored before the
-    parallelism map existed does carry: TP and the shape.
-
-    Without it, those events of an expert-parallel recipe would sit on a line of
-    their own. A shape two recipes share, differing only past TP, is left alone.
-    """
-    options: dict[tuple, list[dict]] = {}
-    for config in expected_configs:
-        if isinstance(config.get("parallelism"), dict):
-            parallelism = config["parallelism"]
-            tp = parallelism.get("tensor_parallel_size", 1)
-            options.setdefault(_tp_shape(config, tp), []).append(parallelism)
-    return {
-        shape: found[0]
-        for shape, found in options.items()
-        if len({parallel_key(parallelism) for parallelism in found}) == 1
-    }
-
-
 # ---------------------------------------------------------------------------
 # Payload
 # ---------------------------------------------------------------------------
-
-
-def _nightly_runs(events: list[dict]) -> list[dict]:
-    """Every nightly build the collector saw, newest first, with how many AMD
-    results each produced: zero means it failed or ran no AMD workload."""
-    results: dict[str, int] = {}
-    for event in events:
-        if _is_in_scope(event):
-            key = _build_key(event)
-            results[key] = results.get(key, 0) + 1
-    runs: dict[str, dict] = {}
-    for event in events:
-        if event.get("event") != NIGHTLY_RUN_EVENT:
-            continue
-        key = _build_key(event)
-        if key not in runs or (received_at(event) or _EPOCH) >= (received_at(runs[key]) or _EPOCH):
-            runs[key] = event
-    published = [
-        {
-            "build": key,
-            "nightly_date": run.get("nightly_date") or "",
-            "date": run.get("date") or "",
-            "state": run.get("state") or "",
-            "build_url": run.get("build_url") or "",
-            "amd_results": results.get(key, 0),
-            # AMD workloads a nightly still going has left to run.
-            "amd_pending": run.get("amd_pending") or [],
-        }
-        for key, run in runs.items()
-    ]
-    published.sort(key=lambda r: (r["nightly_date"] or r["date"][:10], to_int(r["build"]) or 0))
-    return published[::-1]
 
 
 def _is_in_scope(event: dict) -> bool:
@@ -375,7 +296,6 @@ def aggregate(events: list[dict]) -> dict:
     devices: set[str] = set()
     nightlies: set[str] = set()
     expected = _expected_from_events(events)
-    recipe_parallelism = _recipe_parallelism(expected["configs"])
 
     # Each build's provenance, once; the newest event of a build wins.
     builds: dict[str, tuple[datetime, dict]] = {}
@@ -388,10 +308,6 @@ def aggregate(events: list[dict]) -> dict:
             builds[key] = (when, _provenance(event))
         model = (event.get("model") or "").strip() or "(unknown model)"
         if event["event"] == "perf_result":
-            if "parallelism" not in event:
-                shape = _tp_shape(event, to_int(event.get("tp")) or 1)
-                if shape in recipe_parallelism:
-                    event = {**event, "parallelism": recipe_parallelism[shape]}
             perf_by_model.setdefault(model, []).append(event)
         elif event["event"] == "accuracy_result":
             eval_by_model.setdefault(model, []).append(event)
@@ -466,7 +382,6 @@ def aggregate(events: list[dict]) -> dict:
         "expected": expected,
         # Series points name a build; its date and provenance are here once.
         "builds": {key: builds[key][1] for key in sorted(referenced)},
-        "nightly_runs": _nightly_runs(events),
         "models": models,
         "summary": {
             "models": len(models),
@@ -505,7 +420,6 @@ def payload_problems(payload: dict) -> list[str]:
         "generated_at",
         "models",
         "builds",
-        "nightly_runs",
         "summary",
         "thresholds",
         "metric_meta",

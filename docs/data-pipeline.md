@@ -148,12 +148,10 @@ nightly is missing, split into two, or mislabeled.
   build number, URL, commit and branch. A commit with no eval row, or one
   that two builds ran, keeps the day as its build (`#2026-10-01`). The run log
   counts how many results were named each way.
-- **There is no "nightly failed" or "still running" visibility.** The old
-  collector polled Buildkite's builds API to know about a nightly that ran
-  but produced no AMD results, or is still going. Nothing here does that
-  anymore: a nightly is invisible until it has actually produced at least one
-  ingestable row. Accepted tradeoff — see the KPI card's behavior in
-  [reading-the-dashboard.md](reading-the-dashboard.md).
+- **There is no "nightly failed" or "still running" visibility.** A nightly
+  is invisible until it produces a row; nothing polls Buildkite's build state.
+- **There are no failed request counts.** `ingest_perf.py` does not send
+  them, so a run with failed requests cannot be flagged.
 - **A perf row's precision and parallelism come from its recipe, not the
   row.** perf-eval stamps `precision` from the recipe's
   `metadata.precision`, else a marker in the model name, else `bf16`
@@ -202,8 +200,7 @@ page and this section in the same commit.
   `buildkite_builds` found one for the commit, and by calendar day
   (`"2026-09-30"`) otherwise. `build_url` is the Buildkite build page (not a
   per-job deep link: there is no job ID) when the number is real, and `""`
-  for a day key. `nightly_runs` is always empty: nothing reports a nightly
-  that produced no results (see [Data identity](#data-identity)).
+  for a day key.
 
 ```jsonc
 {
@@ -232,20 +229,16 @@ page and this section in the same commit.
     "2026-09-26": { "date": "2026-09-26 14:00:28", "nightly_date": "2026-09-26", "vllm_commit": "...",
                     "build_commit": "", "image": "...", "build_url": "" }
   },
-  // Always empty now; kept for schema stability. See Data identity above.
-  "nightly_runs": [],
   "models": [{
     "model": "org/Model",
     "perf_configs": [{
       "device": "mi355x", "isl": 8192, "osl": 1024, "conc": 128,
       "parallelism": { "tensor_parallel_size": 8 }, "parallel_label": "TP8", "gpus": 8,
       "label": "8K in / 1K out @ conc 128 (MI355X)",
-      "jobs": {},
       "metrics": {
         "tput_per_gpu": {
           "better": "higher", "label": "...", "unit": "tok/s/GPU",
-          "series": [{ "build": "617", "value": 1200.0,
-                       "completed_requests": null, "failed_requests": null }]
+          "series": [{ "build": "617", "value": 1200.0 }]
         }
       }
     }],
