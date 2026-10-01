@@ -248,17 +248,20 @@ def fetch_rows(conn, table: str, *, since: datetime) -> list[dict]:
     otherwise) — confirmed against the real warehouse.
     """
     cutoff = since.strftime("%Y-%m-%dT%H:%M:%S")
-    # Nightly rows only, server-side: the eval table's 30 days of ad-hoc runs
-    # run to tens of thousands of rows, and a result that large broke the
-    # connector's batch paging ("expected results to start from 0"). The
-    # strict client-side is_nightly_row check still applies afterwards.
+    # Nightly rows only, server-side, so less is transferred; the strict
+    # client-side is_nightly_row check still applies afterwards.
     query = (
         f"SELECT message, request_metadata:timestamp::string AS ingest_ts "  # noqa: S608
         f"FROM {table} WHERE request_metadata:timestamp::string >= %(cutoff)s "
         f"AND try_cast(message:nightly AS BOOLEAN)"
     )
+    # Async, not execute(): a synchronous execute() takes the first batch
+    # inline, and connector 4.6 drops that batch and then fails asking for
+    # row 0 ("expected results to start from 0 but they instead start at N").
+    # The async path fetches from row 0 itself.
     with conn.cursor() as cur:
-        cur.execute(query, {"cutoff": cutoff})
+        cur.execute_async(query, {"cutoff": cutoff})
+        cur.get_async_execution_result()
         rows = cur.fetchall()
 
     out = []
