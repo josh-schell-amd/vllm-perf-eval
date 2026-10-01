@@ -248,9 +248,14 @@ def fetch_rows(conn, table: str, *, since: datetime) -> list[dict]:
     otherwise) — confirmed against the real warehouse.
     """
     cutoff = since.strftime("%Y-%m-%dT%H:%M:%S")
+    # Nightly rows only, server-side: the eval table's 30 days of ad-hoc runs
+    # run to tens of thousands of rows, and a result that large broke the
+    # connector's batch paging ("expected results to start from 0"). The
+    # strict client-side is_nightly_row check still applies afterwards.
     query = (
         f"SELECT message, request_metadata:timestamp::string AS ingest_ts "  # noqa: S608
-        f"FROM {table} WHERE request_metadata:timestamp::string >= %(cutoff)s"
+        f"FROM {table} WHERE request_metadata:timestamp::string >= %(cutoff)s "
+        f"AND try_cast(message:nightly AS BOOLEAN)"
     )
     with conn.cursor() as cur:
         cur.execute(query, {"cutoff": cutoff})

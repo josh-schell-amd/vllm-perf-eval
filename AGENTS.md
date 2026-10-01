@@ -62,6 +62,14 @@ python -m http.server 8765 --directory /tmp/site
 
 ## Rules that keep the data right
 
+- **Databricks is read-only to this repository, always.** The tables belong
+  to the `perf-eval` pipeline and other teams read them. Never write
+  `INSERT`, `UPDATE`, `MERGE`, `DELETE`, DDL, `GRANT`, or anything else that
+  changes Databricks. That holds in the collector, in scripts, in tests,
+  and in one-off debugging. Only `SELECT`, `SHOW` and `DESCRIBE` are allowed.
+  If a fix seems to need a write, fix this repository's code instead, or
+  raise it with the user. The token should also be limited to `SELECT` on
+  the two tables, but don't rely on that.
 - **Databricks is the only source of truth for results.** There is no local
   store to edit or migrate: every run re-queries `vllm_perf_data_ingest` /
   `vllm_eval_data_ingest` and rebuilds the payload from scratch. To fix how
