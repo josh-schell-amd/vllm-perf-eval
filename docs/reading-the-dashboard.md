@@ -67,7 +67,8 @@ URL, so **Copy link** reproduces the view.
 - Darker bar = higher concurrency. Red outline = at least 0.5% worse than
   the previous run. Faded = not in the newest nightly: the bar shows its last
   value from an older build. A card with any such bar says so at its top
-  right, in orange: `4 of 4 not in #625`.
+  right, in orange: `Missing in #625 · showing #617`, or `2 of 4 missing in
+  #625 · showing #617` when only some are.
 - A config the newest build neither ran nor expected (its recipe dropped it,
   like an old TP2 variant) is not shown here: it is retired, not missing.
   Trends and Data still show its history.

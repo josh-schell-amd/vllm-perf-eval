@@ -1584,15 +1584,17 @@ function renderPerformanceTab() {
     + '<span class="hint-key"><i class="absent"></i>not in #' + esc(latestNightlyBuild() || '?')
     + '</span>'
     + '</div>';
-  // A bar from an older build looks like tonight's except for its shade, so
-  // each card also says how many of its configs the newest build lacks.
-  const latest = latestNightly();
+  // A faded bar is an older build's value, so each card names what is missing
+  // tonight and which build its faded bars show.
   const absentBadge = g => {
-    const absent = g.rows.filter(r => !r.c.nights.has(latest)).length;
-    return absent
-      ? '<span class="absent-badge">' + absent + ' of ' + g.rows.length + ' not in #'
-        + esc(latestNightlyBuild() || '?') + '</span>'
-      : '';
+    const absent = g.rows.filter(r => !r.latest.tonight);
+    if (!absent.length) return '';
+    const shown = [...new Set(absent.map(r => String(r.latest.point.build_number)))]
+      .sort((a, b) => Number(a) - Number(b) || a.localeCompare(b));
+    return '<span class="absent-badge">'
+      + (absent.length === g.rows.length ? 'Missing' : absent.length + ' of ' + g.rows.length + ' missing')
+      + ' in #' + esc(latestNightlyBuild() || '?') + ' · showing ' + shown.map(b => '#' + esc(b)).join(', ')
+      + '</span>';
   };
   html += groups.length
     ? '<div class="perf-grid">' + groups.map((g, i) =>
