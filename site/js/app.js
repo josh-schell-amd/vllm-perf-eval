@@ -2306,7 +2306,10 @@ function renderAccuracyTab() {
     + 'not against a reference score for the model. A change of <b>' + threshold
     + ' or more</b> counts as improved or regressed; smaller moves are normal run-to-run '
     + 'variation (one gsm8k question is about 0.08 pt). Click a row for history.</div>'
-    + '<div class="table-scroll"><table><thead><tr>'
+    + '<div class="hint-keys">'
+    + '<span class="hint-key"><i class="absent"></i>not in #' + esc(latestNightlyBuild() || '?') + '</span>'
+    + '</div>'
+    + '<div class="table-scroll"><table class="acc-table"><thead><tr>'
     + '<th>Model</th><th>Device</th><th>Task</th><th class="num">Score</th>'
     +
     // "Previous nightly", not "Baseline", which in eval work means a reference score.
@@ -2323,13 +2326,18 @@ function renderAccuracyTab() {
     const current = reportedTonight(s.windowed, tonight);
     const overnight = comparedOvernight(s.windowed, tonight, previous);
     const cls = !v || !v.counted || !overnight ? 'neutral' : (v.improved ? 'good' : 'bad');
-    html += '<tr class="clickable" data-acc="' + i + '">'
+    // Off-nightly scores name their build, so an older value is not read as last night's.
+    const before = s.windowed[s.windowed.length - 2];
+    const baseCell = !v ? '—' : esc(accuracyPercent(v.base)) + (!overnight
+      ? '<br><span class="neutral" style="font-size:11px">from #' + esc(before.build_number || '?') + '</span>' : '');
+    html += '<tr class="clickable' + (current ? '' : ' stale') + '" data-acc="' + i + '"'
+      + (current ? '' : ' title="Not in build #' + esc(nightLabel(tonight) || '?') + '"') + '>'
       + '<td class="config">' + esc(g.shortModel) + '</td>'
       + '<td>' + esc(g.device || '—') + '</td>'
       + '<td>' + esc(g.task) + '</td>'
       + '<td class="num">' + esc(accuracyPercent(newest.value))
       + '<br><span class="neutral" style="font-size:11px">' + esc(accuracyMetricLabel(s.metric)) + '</span></td>'
-      + '<td class="num">' + (v ? esc(accuracyPercent(v.base)) : '—') + '</td>'
+      + '<td class="num">' + baseCell + '</td>'
       + '<td class="num ' + cls + ' mono">' + (v ? esc(accuracyPoints(v.delta, true)) : '—') + '</td>'
       + '<td>' + (!current ? '<span class="pill">not in #' + esc(nightLabel(tonight) || '?') + '</span>'
         : !v ? '<span class="pill">first run</span>'
