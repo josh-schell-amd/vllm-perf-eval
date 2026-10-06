@@ -141,7 +141,7 @@ URL, so **Copy link** reproduces the view.
 
 - **Red = regression, and nothing else.** The palette has no red or pink.
 - **Per metric:** a config turns red only on the charts where it regressed.
-- **By size:** regression chips, row edges and change arrows share one scale:
+- **By size:** regression chips, the detail table legend and change arrows share one scale:
   yellow up to 2.5%, orange up to 5%, red above 5%. A change that is not
   overnight (the config skipped the previous run) stays grey.
 - **Green = improvement.**

@@ -1479,7 +1479,7 @@ function comparedWhen(latest) {
 }
 
 // Colour a change only when it is overnight and past the threshold. A drop
-// takes its size tier, the same yellow/orange/red as the legend and row edge.
+// takes its size tier, the same yellow/orange/red as the legend.
 function changeClass(latest) {
   if (!latest || !latest.verdict || !latest.overnight) return 'neutral';
   const v = latest.verdict;
@@ -1767,9 +1767,6 @@ function renderPerfTable(configs) {
   const selected = perfMetric();
   // The headline metrics, plus the one picked above when it is not among them.
   const cols = [...new Set([...PERF_TABLE_METRICS, selected.key])].map(k => METRIC_BY_KEY[k]).filter(Boolean);
-  const regs = regressionsOf();
-  const worstTier = new Map();
-  regs.forEach(d => worstTier.set(d.configKey, Math.max(worstTier.has(d.configKey) ? worstTier.get(d.configKey) : -1, regTier(d.magnitude))));
   const latest = configs.map(c => Object.fromEntries(METRICS.map(m => [m.key, latestOf(c, m)])));
 
   // Throughput gets a bar against its model and device's largest; latency a
@@ -1810,10 +1807,10 @@ function renderPerfTable(configs) {
   };
 
   let html = '<div class="card"><div class="section-head"><h3>Detail table</h3></div>'
-    // Row tint is the worst regression on any metric. Bars and latency shades
-    // are a separate scale: position within the row's model and device.
+    // Drops are coloured by size on the change under each value. Bars and
+    // latency shades are a separate scale: position within the model and device.
     + '<div class="hint-keys">'
-    + '<span class="hint-key"><i class="edge minor"></i>worst metric, ' + REG_TIERS[0].label + '</span>'
+    + '<span class="hint-key"><i class="edge minor"></i>drop ' + REG_TIERS[0].label + '</span>'
     + '<span class="hint-key"><i class="edge moderate"></i>' + REG_TIERS[1].label + '</span>'
     + '<span class="hint-key"><i class="edge major"></i>' + REG_TIERS[2].label + '</span>'
     + '<span class="hint-key"><i class="heat"></i>latency, fastest to slowest for that model and device</span>'
@@ -1830,11 +1827,9 @@ function renderPerfTable(configs) {
     const l = latest[i];
     const head = l[selected.key] || l[defaultPerfMetric()] || Object.values(l).find(Boolean);
     if (!head) return;
-    const tier = worstTier.has(c.key) ? REG_TIERS[worstTier.get(c.key)].cls : '';
-    const cls = (tier ? 'reg-' + tier : '') + (head.tonight ? '' : ' stale');
-    html += '<tr data-row="' + i + '" class="' + cls.trim() + '"'
+    html += '<tr data-row="' + i + '" class="' + (head.tonight ? '' : 'stale') + '"'
       + (head.tonight ? '' : ' title="Not in build #' + esc(latestNightlyBuild() || '?') + '"') + '>'
-      + '<td class="model">' + (tier ? '⚠ ' : '') + esc(c.shortModel)
+      + '<td class="model">' + esc(c.shortModel)
       + ' <span class="device">' + esc(String(c.device || '?').toUpperCase()) + '</span></td>'
       + '<td>' + esc(shapeLabel(c)) + '</td>'
       + '<td>' + esc(variantLabel(c) || '—') + '</td>'
