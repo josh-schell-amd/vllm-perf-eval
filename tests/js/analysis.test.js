@@ -106,12 +106,32 @@ test('a config is compared overnight only against the previous nightly', () => {
   assert.equal(a.reportedTonight([], 'n25'), false);
 });
 
-test('a rebuild of a nightly is the same nightly; a quiet day on one commit is not', () => {
-  const b605 = { nightly_date: '2026-09-28', vllm_commit: 'abc' };
-  assert.equal(a.nightKey(b605, '605'), a.nightKey({ ...b605 }, '607'));
-  assert.notEqual(a.nightKey(b605, '605'), a.nightKey({ ...b605, nightly_date: '2026-09-27' }, '603'));
-  // Mirrors store.nightly_identity's fallback.
+test('a nightly is its day, whatever builds and commits its results carry', () => {
+  const b701 = { nightly_date: '2026-10-18', vllm_commit: 'da9134bc' };
+  assert.equal(a.nightKey(b701, '701'), a.nightKey({ ...b701 }, '703'));
+  // Results no build was found for, on another commit, are still that day's.
+  assert.equal(a.nightKey(b701, '701'), a.nightKey({ nightly_date: '2026-10-18', vllm_commit: 'ffff' }, '2026-10-18'));
+  assert.notEqual(a.nightKey(b701, '701'), a.nightKey({ ...b701, nightly_date: '2026-10-17' }, '700'));
+  // No named day: the day it finished.
+  assert.equal(a.nightKey({ date: '2026-10-18 03:00:00' }, '701'), a.nightKey(b701, '701'));
+  // Mirrors events.nightly_identity's fallback.
   assert.equal(a.nightKey({}, '42'), 'build:42');
+});
+
+test('one day split by commit no longer hides every overnight change', () => {
+  // Config A ran under build 701; config B's result that day has no build.
+  const night = (day, build, commit) => a.nightKey({ nightly_date: day, vllm_commit: commit }, build);
+  const ptsA = [{ night: night('2026-10-17', '700', 'c1') }, { night: night('2026-10-18', '701', 'c2') }];
+  const ptsB = [{ night: night('2026-10-17', '2026-10-17', 'x1') }, { night: night('2026-10-18', '2026-10-18', 'x2') }];
+  const tonight = night('2026-10-18', '701', 'c2'), before = night('2026-10-17', '700', 'c1');
+  assert.equal(a.comparedOvernight(ptsA, tonight, before), true);
+  assert.equal(a.comparedOvernight(ptsB, tonight, before), true);
+});
+
+test('a nightly is labelled by its Buildkite builds, or its day when it has none', () => {
+  assert.equal(a.buildsLabel(['607', '605']), '605/607');
+  assert.equal(a.buildsLabel(['2026-10-18', '701']), '701');
+  assert.equal(a.buildsLabel(['2026-10-18']), '2026-10-18');
 });
 
 test('nightlies rank newest day first, then newest build for a shared day', () => {
@@ -119,8 +139,9 @@ test('nightlies rank newest day first, then newest build for a shared day', () =
     ['n23', { x: a.dayX('2026-09-23'), builds: ['599'] }],
     ['n25a', { x: a.dayX('2026-09-25'), builds: ['601'] }],
     ['n25b', { x: a.dayX('2026-09-25'), builds: ['600', '602'] }],
+    ['n25c', { x: a.dayX('2026-09-25'), builds: ['2026-09-25'] }],
   ]);
-  assert.deepEqual(a.rankNightlies(nights), ['n25b', 'n25a', 'n23']);
+  assert.deepEqual(a.rankNightlies(nights), ['n25b', 'n25a', 'n25c', 'n23']);
 });
 
 test('the full chart window runs noon to noon, from the day before the cutoff', () => {

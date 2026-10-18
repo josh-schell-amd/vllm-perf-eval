@@ -19,6 +19,7 @@ const {
   verdict,
   accuracyVerdict,
   nightKey,
+  buildsLabel,
   reportedTonight,
   comparedOvernight,
   REG_TIERS,
@@ -389,7 +390,7 @@ function previousNightly() { return recentNightlies().ranked[1] || null; }
 // How labels name a nightly: its build, or builds when it was rebuilt ("605/607").
 function nightLabel(night) {
   const n = recentNightlies().nights.get(night);
-  return n ? [...n.builds].sort((a, b) => a - b).join('/') : null;
+  return n ? buildsLabel(n.builds) : null;
 }
 function latestNightlyBuild() { return nightLabel(latestNightly()); }
 function previousNightlyBuild() { return nightLabel(previousNightly()); }
@@ -551,12 +552,16 @@ function coverage() {
 }
 
 // A point from the latest nightly, for the card that names it. Unfiltered,
-// and the same nightly every other card compares.
+// and the same nightly every other card compares. One from its newest
+// Buildkite build where it has one: some of a day's results may have none.
 function latestRun() {
   const night = latestNightly();
+  const rank = p => (/^\d+$/.test(p.build_number) ? Number(p.build_number) : -1);
   let found = null;
   CONFIGS.forEach(c => Object.keys(c.metrics).forEach(mk => {
-    pointsIn(c, mk).forEach(p => { if (!found && p.night === night) found = p; });
+    pointsIn(c, mk).forEach(p => {
+      if (p.night === night && (!found || rank(p) > rank(found))) found = p;
+    });
   }));
   return found;
 }

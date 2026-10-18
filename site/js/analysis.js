@@ -116,17 +116,23 @@ function accuracyVerdict(values, accuracyAbs) {
   };
 }
 
-// True when the config's newest point is from the latest nightly. Otherwise
-// its last two points are an older night's change, not tonight's.
-// Which nightly a build belongs to, from its payload builds entry. Mirrors
-// store.nightly_identity: a rebuild of a nightly (same day, same commit) is
-// the same nightly, so a partial retry does not hide the configs it skipped.
+// Which nightly a build belongs to, from its payload builds entry: its day.
+// Mirrors events.nightly_identity. Not the vLLM commit too: results of one
+// day can carry different commits, and splitting the day by them left each
+// part comparing against the other, so nothing compared overnight.
 function nightKey(b, build) {
-  return b.nightly_date || b.vllm_commit
-    ? 'nightly:' + (b.nightly_date || '') + ':' + (b.vllm_commit || '')
-    : 'build:' + build;
+  return b.nightly_date || b.date ? 'nightly:' + nightlyDay(b) : 'build:' + build;
 }
 
+// How labels name a nightly from its builds: the Buildkite numbers, or the
+// day ("2026-10-18") when no build was found for any of its results.
+function buildsLabel(builds) {
+  const numbered = builds.filter(b => /^\d+$/.test(b)).sort((a, b) => a - b);
+  return (numbered.length ? numbered : builds).join('/');
+}
+
+// True when the config's newest point is from the latest nightly. Otherwise
+// its last two points are an older night's change, not tonight's.
 // latest and previous are nightKeys; points carry theirs as `night`.
 function reportedTonight(pts, latest) {
   return pts.length > 0 && pts[pts.length - 1].night === latest;
@@ -210,7 +216,8 @@ const DAY_MS = 86400000;
 // nights: nightKey -> { x: its day, builds: [build numbers] }. Newest day
 // first, then the newest build for a shared day.
 function rankNightlies(nights) {
-  const newest = n => Math.max(...n.builds.map(Number));
+  // A day-named build ("2026-10-18") is not a number; it must not make the order NaN.
+  const newest = n => Math.max(0, ...n.builds.map(Number).filter(Number.isFinite));
   return [...nights.entries()]
     .sort((a, b) => b[1].x - a[1].x || newest(b[1]) - newest(a[1]))
     .map(e => e[0]);
@@ -285,6 +292,7 @@ const api = {
   verdict,
   accuracyVerdict,
   nightKey,
+  buildsLabel,
   reportedTonight,
   comparedOvernight,
   REG_TIERS,

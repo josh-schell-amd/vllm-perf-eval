@@ -137,17 +137,23 @@ nightly is missing, split into two, or mislabeled.
   `timestamp` for accuracy — both already UTC), not a Buildkite build number
   or its message-parsed nightly date. This is simpler but coarser: **a
   nightly retried on a different calendar day is not folded back into the
-  original one**, it just becomes its own day's entry. `vllm_commit`, parsed
-  out of the image tag for perf rows (real, straight off the row, for
-  accuracy rows), still folds two rows from the same day and commit into one
-  nightly if collected separately.
+  original one**, it just becomes its own day's entry. The day is the whole
+  key (`events.nightly_identity`, mirrored by the page's `nightKey`): the
+  vLLM commit is not part of it. A day's results need not all carry one
+  commit, or all be named by one build, and keying on the commit split such
+  a day into two nightlies, each holding only some configs. The page then
+  compared one half against the other, so every card read 0 regressions and
+  one half showed as missing ("Missing 10/18 · showing 10/18"). Two results
+  of one config on one day keep the newer.
 - **The build shown is the real Buildkite build where it can be found.**
   Perf rows carry no build, but eval rows do, and a nightly's perf and eval
   jobs share one image. `buildkite_builds` maps each vLLM commit to the one
   build whose eval rows ran it, and every result with that commit takes its
   build number, URL, commit and branch. A commit with no eval row, or one
   that two builds ran, keeps the day as its build (`#2026-10-01`). The run log
-  counts how many results were named each way.
+  counts how many results were named each way. A nightly holding both is
+  named by its real builds alone (`#701`); its day-named results still show
+  their own build on hover.
 - **There is no "nightly failed" or "still running" visibility.** A nightly
   is invisible until it produces a row; nothing polls Buildkite's build state.
 - **There are no failed request counts.** `ingest_perf.py` does not send
@@ -178,8 +184,8 @@ nightly is missing, split into two, or mislabeled.
   `buildkite_build_url`, `buildkite_branch`, `buildkite_commit`, `vllm_commit`)
   because `lib/ingest.py` stamps it directly. That is what names the build of
   every result with the same commit, perf included (above). It is not used
-  for grouping: perf and accuracy results from the same day and commit merge
-  into one nightly via the day-bucket key.
+  for grouping: perf and accuracy results from the same day merge into one
+  nightly via the day-bucket key.
 - **A series is what ran:** model, device, precision, parallelism, ISL/OSL
   and concurrency. Changing any of those starts a new line, and a regression
   is only ever measured within one line.
