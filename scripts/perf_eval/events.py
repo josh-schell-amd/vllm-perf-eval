@@ -5,12 +5,15 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 
 RESULT_EVENTS = frozenset({"perf_result", "accuracy_result"})
 EXPECTED_CONFIGS_EVENT = "expected_configs"
+
+_DAY_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 
 # ---------------------------------------------------------------------------
@@ -47,12 +50,17 @@ def received_at(event: dict) -> datetime | None:
 
 
 def nightly_identity(event: dict) -> str:
-    """Day and vLLM commit, so a nightly's perf and accuracy results share it."""
+    """The nightly's UTC day, as the page's ``nightKey`` reads it.
+
+    Not the vLLM commit too: a day's results need not all carry the same
+    one, and keying on it split the day into nightlies that each held only
+    some configs, so none compared overnight.
+    """
     day = str(event.get("nightly_date") or "").strip()
-    commit = str(event.get("vllm_commit") or "").strip()
-    if day or commit:
-        return f"nightly:{day}:{commit}"
-    return f"build:{event.get('build_number')}"
+    if not _DAY_RE.fullmatch(day):
+        finished = finished_at(event)
+        day = finished.date().isoformat() if finished else ""
+    return f"nightly:{day}" if day else f"build:{event.get('build_number')}"
 
 
 # ---------------------------------------------------------------------------

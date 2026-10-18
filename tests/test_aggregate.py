@@ -8,6 +8,7 @@ import pytest
 
 from conftest import accuracy_result, days_ago, perf_result
 from perf_eval import aggregate as agg
+from perf_eval.events import nightly_identity
 
 
 def _only_model(payload):
@@ -52,12 +53,12 @@ class TestScopeFilter:
 
 class TestSeriesOrdering:
     def test_newest_observation_wins_regardless_of_store_order(self):
-        # Same nightly (same commit) observed twice. The newer observation
+        # Same nightly (same day) observed twice. The newer observation
         # appears FIRST in the store, so resolving by list position would pick
         # the stale value.
         events = [
-            perf_result(commit="a" * 40, value=100.0, date="2026-01-02 00:00:00"),
-            perf_result(commit="a" * 40, value=50.0, date="2026-01-01 00:00:00"),
+            perf_result(commit="a" * 40, value=100.0, date="2026-01-01 09:00:00"),
+            perf_result(commit="a" * 40, value=50.0, date="2026-01-01 01:00:00"),
         ]
         block = _metric(agg.aggregate(events))
         assert block["series"][-1]["value"] == 100.0
@@ -259,7 +260,7 @@ class TestAccuracyGrouping:
 
 class TestWhatCountsAsANightly:
     """The nightly count is whatever `nightly_identity` considers one run:
-    the named day and the vLLM commit, falling back to build number.
+    the UTC day, falling back to build number.
     """
 
     def _events(self, days: int, runs_per_day: int, *, distinct_commits: bool):
@@ -276,10 +277,11 @@ class TestWhatCountsAsANightly:
                 )
         return events
 
-    def test_several_runs_a_day_on_distinct_commits_count_separately(self):
-        # 5 runs a day for 14 days on different commits is 70 nightlies.
+    def test_several_runs_a_day_on_distinct_commits_are_one_nightly(self):
+        # A day's results can carry different commits (an image without the
+        # nightly's commit, say); split by commit, no config compared overnight.
         payload = agg.aggregate(self._events(14, 5, distinct_commits=True))
-        assert payload["summary"]["nightlies"] == 70
+        assert payload["summary"]["nightlies"] == 14
 
     def test_several_runs_a_day_on_one_commit_collapse(self):
         # The same commit re-run 5 times a night is still one nightly: that is
@@ -288,15 +290,25 @@ class TestWhatCountsAsANightly:
         assert payload["summary"]["nightlies"] == 14
 
     def test_one_run_a_day_is_one_nightly_a_day(self):
-        # The real pipeline shape: one scheduled nightly per new vLLM commit.
         payload = agg.aggregate(self._events(14, 1, distinct_commits=True))
         assert payload["summary"]["nightlies"] == 14
 
-    def test_a_run_without_a_commit_falls_back_to_build_number(self):
-        events = [perf_result(commit="", build_number=n) for n in (1, 2, 3)]
+    def test_one_config_keeps_the_days_newest_result(self):
+        events = [
+            perf_result(commit="a" * 40, date="2026-01-01 01:00:00", build_number=1, value=1.0),
+            perf_result(commit="b" * 40, date="2026-01-01 02:00:00", build_number=2, value=2.0),
+        ]
+        assert [p["value"] for p in _metric(agg.aggregate(events))["series"]] == [2.0]
+
+    def test_the_named_day_wins_over_the_finish_time(self):
+        event = perf_result(date="2026-01-02 01:00:00")
+        assert nightly_identity({**event, "nightly_date": "2026-01-01"}) == "nightly:2026-01-01"
+        assert nightly_identity(event) == "nightly:2026-01-02"
+
+    def test_a_run_without_a_date_falls_back_to_build_number(self):
+        events = [perf_result(build_number=n) for n in (1, 2, 3)]
         for event in events:
-            event["vllm_commit"] = ""
-            event["build_commit"] = ""
+            event["date"] = ""
         assert agg.aggregate(events)["summary"]["nightlies"] == 3
 
 
