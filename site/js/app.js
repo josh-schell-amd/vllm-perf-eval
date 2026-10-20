@@ -462,10 +462,12 @@ function belowOnly(below, counted) {
   configsIn(counted).forEach(k => out.delete(k));
   return out;
 }
-// Regressed on *this* metric, not merely somewhere.
-function regressedKeysForMetric(metricKey) {
-  return configsIn(scan().filter(d => d.regressed && d.metricKey === metricKey));
+// Regressed on *this* metric, not merely somewhere. Derived metrics included:
+// charts ring them even though counts leave them out.
+function regressionsForMetric(metricKey) {
+  return scan().filter(d => d.regressed && d.metricKey === metricKey);
 }
+function regressedKeysForMetric(metricKey) { return configsIn(regressionsForMetric(metricKey)); }
 
 // Median night-over-night change across configs; one config's delta is noise.
 function nightOverNight() {
@@ -1217,9 +1219,11 @@ function drawTrendChart(group, canvasId, metric) {
   const regColor = cssVar('--accent-red') || REG_COLOR;
   // Text colour, so the ring contrasts in both themes.
   const ringColor = cssVar('--text-primary') || '#fff';
-  const regForMetric = regressedKeysForMetric(metric.key);
   // Each regressed config's change on this metric, to name it in the legend.
-  const change = new Map(regressionsOf().filter(d => d.metricKey === metric.key).map(d => [d.configKey, d.ratio]));
+  // From the same list as regressedKeysForMetric: regressionsOf() leaves
+  // derived metrics out, which named their regressions "▼NaN%".
+  const change = new Map(regressionsForMetric(metric.key).map(d => [d.configKey, d.ratio]));
+  const regForMetric = new Set(change.keys());
   const datasets = group.series
     .map(s => {
       const pts = chartPointsIn(s.config, metric.key);
